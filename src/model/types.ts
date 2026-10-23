@@ -57,9 +57,8 @@ export interface PlaylistTrack {
   mute: boolean;
 }
 
-export interface PlaylistClip {
+interface ClipBase {
   id: string;
-  patternId: string;
   /** Index into playlist.tracks */
   track: number;
   /** Song position in ticks. */
@@ -68,12 +67,59 @@ export interface PlaylistClip {
   length: number;
 }
 
+/** Plays a pattern, repeating it when the clip is longer than the pattern. */
+export interface PatternClip extends ClipBase {
+  kind: 'pattern';
+  patternId: string;
+}
+
+/**
+ * Plays the sample of a Sampler channel (whose settings and mixer routing it
+ * uses) from `offset` seconds into the audio. Audio is not time-stretched.
+ */
+export interface AudioClip extends ClipBase {
+  kind: 'audio';
+  channelId: string;
+  offset: number;
+}
+
+/** What an automation clip controls. */
+export type AutomationTarget =
+  | { kind: 'channel'; channelId: string; param: 'volume' | 'pan' }
+  | { kind: 'instrument'; channelId: string; param: string }
+  | { kind: 'mixer'; track: number; param: 'volume' | 'pan' }
+  | { kind: 'effect'; track: number; slotId: string; param: string };
+
+export interface AutomationPoint {
+  /** Ticks from the clip start. */
+  t: number;
+  /** Normalized value 0..1 (the position of the control, as on a knob). */
+  v: number;
+}
+
+/** Moves a parameter along a curve of points while the song plays. */
+export interface AutomationClip extends ClipBase {
+  kind: 'automation';
+  target: AutomationTarget;
+  /** Sorted by `t`; at least one point. Values hold flat before/after the ends. */
+  points: AutomationPoint[];
+}
+
+export type PlaylistClip = PatternClip | AudioClip | AutomationClip;
+
 export interface EffectSlot {
   id: string;
   /** Effect plugin id (see plugins/registry). */
   plugin: string;
   params: ParamValues;
   enabled: boolean;
+}
+
+export interface MixerSend {
+  /** Insert that receives the signal (never the master, never itself). */
+  to: number;
+  /** Linear gain of the send. */
+  level: number;
 }
 
 export interface MixerTrack {
@@ -85,6 +131,10 @@ export interface MixerTrack {
   mute: boolean;
   solo: boolean;
   effects: EffectSlot[];
+  /** Whether the insert feeds the master (ignored on the master itself). */
+  toMaster: boolean;
+  /** Post-fader routes to other inserts. */
+  sends: MixerSend[];
 }
 
 export interface SampleAsset {
@@ -98,6 +148,8 @@ export interface Project {
   version: 1;
   name: string;
   bpm: number;
+  /** 0..1: delays every second 16th note by up to half a step. */
+  swing: number;
   channels: Channel[];
   patterns: Pattern[];
   playlist: {

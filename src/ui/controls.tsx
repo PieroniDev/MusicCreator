@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ParamSpec } from '../plugins/params';
 import { formatParam, normToValue, valueToNorm } from '../plugins/params';
 import { actions } from '../state/store';
+import { faderToGain, formatDb, gainToFader } from '../model/automation';
+import type { AutomationTarget } from '../model/types';
+import { openContextMenu, type MenuItem } from './ContextMenu';
 
 export type KnobSpec = Pick<ParamSpec, 'min' | 'max' | 'default' | 'scale' | 'step' | 'unit' | 'options'> & { name?: string };
 
@@ -35,6 +38,30 @@ function gestureHandlers() {
   return { onStart: () => actions().beginGesture(), onEnd: () => actions().endGesture() };
 }
 
+/** Right-click menu of a control: reset, and automate it from the playlist. */
+function controlMenu(event: React.MouseEvent, title: string, reset: () => void, automation?: AutomationTarget): void {
+  const items: MenuItem[] = [
+    {
+      label: 'Restaurar valor padrão',
+      action: () => {
+        actions().beginGesture();
+        reset();
+        actions().endGesture();
+      },
+    },
+  ];
+  if (automation) {
+    items.push({
+      label: 'Criar clip de automação',
+      action: () => {
+        const a = actions();
+        if (a.addAutomationClip(automation)) a.toggleWindow('playlist', true);
+      },
+    });
+  }
+  openContextMenu(event, items, title);
+}
+
 function arcPath(cx: number, cy: number, r: number, from: number, to: number): string {
   const a0 = ((from - 90) * Math.PI) / 180;
   const a1 = ((to - 90) * Math.PI) / 180;
@@ -53,9 +80,11 @@ interface KnobProps {
   /** Format override for the tooltip/readout. */
   format?: (value: number) => string;
   showValue?: boolean;
+  /** Parameter this knob controls, offered for automation in its right-click menu. */
+  automation?: AutomationTarget;
 }
 
-export function Knob({ value, spec, onChange, label, size = 34, color, format, showValue = true }: KnobProps) {
+export function Knob({ value, spec, onChange, label, size = 34, color, format, showValue = true, automation }: KnobProps) {
   const ref = useRef<HTMLDivElement>(null);
   const normRef = useRef(valueToNorm(spec as ParamSpec, value));
   const [active, setActive] = useState(false);
@@ -124,6 +153,7 @@ export function Knob({ value, spec, onChange, label, size = 34, color, format, s
           });
         }}
         onDoubleClick={() => onChange(spec.default)}
+        onContextMenu={(e) => controlMenu(e, label ?? spec.name ?? '', () => onChange(spec.default), automation)}
       >
         <svg width={size} height={size}>
           <path d={arcPath(c, c, r, -135, 135)} className="knob-track" />
@@ -150,29 +180,16 @@ export function Knob({ value, spec, onChange, label, size = 34, color, format, s
   );
 }
 
-/** Mixer fader: gain 0..2 with 0 dB at about 70% of the travel. */
-export function gainToFader(gain: number): number {
-  return Math.sqrt(Math.max(0, gain) / 2);
-}
-
-export function faderToGain(pos: number): number {
-  const p = Math.min(1, Math.max(0, pos));
-  return p * p * 2;
-}
-
-export function formatDb(gain: number): string {
-  if (gain <= 0.0001) return '-∞ dB';
-  const db = 20 * Math.log10(gain);
-  return `${db > 0 ? '+' : ''}${db.toFixed(1)} dB`;
-}
+export { faderToGain, formatDb, gainToFader } from '../model/automation';
 
 interface FaderProps {
   value: number;
   onChange(value: number): void;
   height?: number;
+  automation?: AutomationTarget;
 }
 
-export function Fader({ value, onChange, height = 150 }: FaderProps) {
+export function Fader({ value, onChange, height = 150, automation }: FaderProps) {
   const pos = gainToFader(value);
   const travel = height - 18;
   return (
@@ -181,6 +198,7 @@ export function Fader({ value, onChange, height = 150 }: FaderProps) {
       style={{ height }}
       title={formatDb(value)}
       onDoubleClick={() => onChange(0.8)}
+      onContextMenu={(e) => controlMenu(e, 'Volume', () => onChange(0.8), automation)}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         e.preventDefault();

@@ -1,6 +1,6 @@
 import { engine } from '../audio/engine';
 import { actions, useStore, type WindowId } from '../state/store';
-import type { Voice } from '../plugins/types';
+import { liveNoteOff, liveNoteOn, releaseAllLive } from './liveInput';
 import { isTyping } from './focus';
 import { newProject, openProject, saveProject } from './fileOps';
 import { runExport } from './exporter';
@@ -19,7 +19,7 @@ const WINDOW_KEYS: Record<string, WindowId> = { F5: 'playlist', F6: 'channelRack
 
 /** Global shortcuts: transport, windows, undo, and the computer-keyboard piano. */
 export function installKeyboard(): () => void {
-  const held = new Map<string, Voice | null>();
+  const held = new Set<string>();
 
   const down = (e: KeyboardEvent) => {
     if (isTyping(e)) return;
@@ -72,22 +72,19 @@ export function installKeyboard(): () => void {
     if (key !== undefined) {
       e.preventDefault();
       if (e.repeat || held.has(e.code)) return;
-      const channelId = useStore.getState().ui.selectedChannelId;
-      held.set(e.code, channelId ? engine.previewNote(channelId, key, 0.8) : null);
+      held.add(e.code);
+      liveNoteOn('kbd', key, 0.8);
     }
   };
 
   const up = (e: KeyboardEvent) => {
-    const voice = held.get(e.code);
-    if (voice !== undefined) {
-      voice?.release(engine.context?.currentTime ?? 0);
-      held.delete(e.code);
-    }
+    const key = NOTE_KEYS.get(e.code);
+    if (key !== undefined && held.delete(e.code)) liveNoteOff('kbd', key);
   };
 
   const releaseAll = () => {
-    for (const v of held.values()) v?.release(engine.context?.currentTime ?? 0);
     held.clear();
+    releaseAllLive();
   };
 
   window.addEventListener('keydown', down);

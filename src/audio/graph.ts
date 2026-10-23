@@ -1,7 +1,8 @@
-import type { Channel, EffectSlot, MixerTrack, Project } from '../model/types';
+import type { AutomationTarget, Channel, EffectSlot, MixerTrack, ParamValues, Project } from '../model/types';
 import type { EffectInstance, Voice } from '../plugins/types';
 import { getEffect, getInstrument } from '../plugins/registry';
 import { disconnectAll } from '../plugins/dsp';
+import { targetKey, type AutomatedValue } from '../model/automation';
 import { decodeSample, getDecodedSample } from './samples';
 
 interface ChannelStrip {
@@ -23,6 +24,10 @@ interface MixerStrip {
   fader: GainNode;
   panner: StereoPannerNode;
   mute: GainNode;
+  /** Post-fader output that feeds the master and the sends. */
+  out: GainNode;
+  sends: Map<number, GainNode>;
+  routeKey: string;
   effects: Map<string, FxEntry>;
   chainKey: string;
   meters?: [AnalyserNode, AnalyserNode];
@@ -42,14 +47,16 @@ export interface GraphOptions {
 
 /**
  * The audio graph of a project on one context: channel strips feeding mixer
- * tracks, each with its effect chain, fader and pan, all summed into the
- * master. Used both by the live engine and by offline (WAV) renders.
+ * tracks, each with its effect chain, fader and pan, routed to the master and
+ * to other inserts. Used both by the live engine and by offline (WAV) renders.
  * `sync` reconciles it with a new project state, touching only what changed.
+ * Automation overrides project values while the song plays (see setAutomation).
  */
 export class AudioGraph {
   private readonly channels = new Map<string, ChannelStrip>();
   private readonly mixer: MixerStrip[] = [];
   private readonly voices = new Set<Voice>();
+  private automation = new Map<string, AutomatedValue>();
   private bpm = 120;
   private project?: Project;
 
@@ -75,7 +82,11 @@ export class AudioGraph {
     await Promise.all(jobs);
   }
 
-  playNote(channelId: string, key: number, velocity: number, time: number, duration?: number): Voice | null {
+  /**
+   * Plays a note on a channel. `params` overrides some instrument params for
+   * this note only (automation at the note's start).
+   */
+  playNote(channelId: string, key: number, velocity: number, time: number, duration?: number, params?: ParamValues): Voice | null {
     const strip = this.channels.get(channelId);
     if (!strip) return null;
     const channel = strip.channel;
@@ -86,12 +97,33 @@ export class AudioGraph {
       velocity,
       time,
       rootKey: channel.rootKey,
-      params: channel.params,
+      params: params ? { ...channel.params, ...params } : channel.params,
       sample: getDecodedSample(channel.sampleId),
     });
-    this.voices.add(voice);
-    voice.onEnded = () => this.voices.delete(voice);
+    this.track(voice);
     if (duration !== undefined) voice.release(time + duration);
+    return voice;
+  }
+
+  /** Plays an audio clip: the channel's sample from `offset` seconds, for `duration` seconds. */
+  playClip(channelId: string, time: number, offset: number, duration: number, params?: ParamValues): Voice | null {
+    const strip = this.channels.get(channelId);
+    const channel = strip?.channel;
+    const plugin = channel && getInstrument(channel.instrument);
+    const sample = getDecodedSample(channel?.sampleId);
+    if (!strip || !channel || !plugin?.usesSample || !sample) return null;
+    const voice = plugin.noteOn(this.ctx, strip.input, {
+      key: channel.rootKey,
+      velocity: 1,
+      time,
+      rootKey: channel.rootKey,
+      params: params ? { ...channel.params, ...params } : channel.params,
+      sample,
+      offset,
+      gated: true,
+    });
+    this.track(voice);
+    voice.release(time + duration);
     return voice;
   }
 
@@ -103,6 +135,22 @@ export class AudioGraph {
   killAll(): void {
     for (const v of this.voices) v.kill();
     this.voices.clear();
+  }
+
+  /**
+   * Sets the automated values in effect now (from automationAt). Targets that
+   * were automated before and are missing now go back to their project value.
+   * Instrument targets are applied per note instead (see playNote).
+   */
+  setAutomation(values: Map<string, AutomatedValue>): void {
+    const previous = this.automation;
+    this.automation = values;
+    for (const [key, entry] of values) {
+      if (previous.get(key)?.value !== entry.value) this.applyTarget(entry.target);
+    }
+    for (const [key, entry] of previous) {
+      if (!values.has(key)) this.applyTarget(entry.target);
+    }
   }
 
   /** Peak level (0..) of a mixer track's left and right channels since the last call. */
@@ -124,26 +172,74 @@ export class AudioGraph {
     for (const s of this.channels.values()) disconnectAll(s.input, s.panner);
     for (const m of this.mixer) {
       for (const fx of m.effects.values()) fx.instance.dispose();
-      disconnectAll(m.input, m.fader, m.panner, m.mute, ...(m.meters ?? []));
+      disconnectAll(m.input, m.fader, m.panner, m.mute, m.out, ...m.sends.values(), ...(m.meters ?? []));
     }
     this.channels.clear();
     this.mixer.length = 0;
   }
 
-  private createMixerStrip(index: number): MixerStrip {
+  private track(voice: Voice): void {
+    this.voices.add(voice);
+    voice.onEnded = () => this.voices.delete(voice);
+  }
+
+  /** The automated value of a target, if it is automated right now. */
+  private automated(target: AutomationTarget): number | undefined {
+    return this.automation.get(targetKey(target))?.value;
+  }
+
+  /** Pushes the effective value (automated or from the project) of one target to the audio nodes. */
+  private applyTarget(target: AutomationTarget): void {
+    const project = this.project;
+    if (!project) return;
+    const now = this.ctx.currentTime;
+    switch (target.kind) {
+      case 'channel': {
+        const strip = this.channels.get(target.channelId);
+        if (!strip) return;
+        const value = this.automated(target) ?? strip.channel[target.param];
+        if (target.param === 'volume') strip.input.gain.setTargetAtTime(strip.muted ? 0 : value, now, 0.01);
+        else strip.panner.pan.setTargetAtTime(value, now, 0.01);
+        return;
+      }
+      case 'mixer': {
+        const strip = this.mixer[target.track];
+        const track = project.mixer[target.track];
+        if (!strip || !track) return;
+        const value = this.automated(target) ?? track[target.param];
+        if (target.param === 'volume') strip.fader.gain.setTargetAtTime(value, now, 0.01);
+        else strip.panner.pan.setTargetAtTime(value, now, 0.01);
+        return;
+      }
+      case 'effect': {
+        const entry = this.mixer[target.track]?.effects.get(target.slotId);
+        if (!entry) return;
+        const value = this.automated(target) ?? entry.slot.params[target.param];
+        if (value !== undefined) entry.instance.setParam(target.param, value, { ...entry.slot.params, [target.param]: value });
+        return;
+      }
+      case 'instrument':
+        return;
+    }
+  }
+
+  private createMixerStrip(): MixerStrip {
     const ctx = this.ctx;
     const strip: MixerStrip = {
       input: ctx.createGain(),
       fader: ctx.createGain(),
       panner: ctx.createStereoPanner(),
       mute: ctx.createGain(),
+      out: ctx.createGain(),
+      sends: new Map(),
+      routeKey: '',
       effects: new Map(),
       chainKey: '',
     };
     strip.input.connect(strip.fader);
     strip.fader.connect(strip.panner);
     strip.panner.connect(strip.mute);
-    strip.mute.connect(index === 0 ? ctx.destination : this.mixer[0].input);
+    strip.mute.connect(strip.out);
     if (this.options.meters) {
       const split = ctx.createChannelSplitter(2);
       const meters: [AnalyserNode, AnalyserNode] = [ctx.createAnalyser(), ctx.createAnalyser()];
@@ -160,20 +256,51 @@ export class AudioGraph {
 
   private syncMixer(project: Project, tempoChanged: boolean): void {
     const anySolo = project.mixer.some((t, i) => i > 0 && t.solo);
+    project.mixer.forEach((_, i) => {
+      if (!this.mixer[i]) this.mixer[i] = this.createMixerStrip();
+    });
     project.mixer.forEach((track, i) => {
-      if (!this.mixer[i]) this.mixer[i] = this.createMixerStrip(i);
       const strip = this.mixer[i];
       const muted = track.mute || (i > 0 && anySolo && !track.solo);
       strip.mute.gain.value = muted ? 0 : 1;
       if (strip.track === track && !tempoChanged) return;
-      setSmooth(strip.fader.gain, track.volume, this.ctx, !strip.track);
-      setSmooth(strip.panner.pan, track.pan, this.ctx, !strip.track);
-      if (strip.track?.effects !== track.effects || tempoChanged) this.syncEffects(strip, track.effects, tempoChanged);
+      const fresh = !strip.track;
+      setSmooth(strip.fader.gain, this.automated({ kind: 'mixer', track: i, param: 'volume' }) ?? track.volume, this.ctx, fresh);
+      setSmooth(strip.panner.pan, this.automated({ kind: 'mixer', track: i, param: 'pan' }) ?? track.pan, this.ctx, fresh);
+      if (strip.track?.effects !== track.effects || tempoChanged) this.syncEffects(strip, i, track.effects, tempoChanged);
+      this.syncRouting(strip, i, track);
       strip.track = track;
     });
   }
 
-  private syncEffects(strip: MixerStrip, slots: EffectSlot[], tempoChanged: boolean): void {
+  /** Connects an insert's output to the master and its sends, rewiring only when the routes change. */
+  private syncRouting(strip: MixerStrip, index: number, track: MixerTrack): void {
+    const toMaster = index > 0 && track.toMaster;
+    const key = `${index === 0 ? 'out' : toMaster}|${track.sends.map((s) => s.to).join(',')}`;
+    if (key !== strip.routeKey) {
+      strip.routeKey = key;
+      disconnectAll(strip.out, ...strip.sends.values());
+      strip.sends.clear();
+      if (index === 0) strip.out.connect(this.ctx.destination);
+      else if (toMaster) strip.out.connect(this.mixer[0].input);
+      for (const send of track.sends) {
+        const target = this.mixer[send.to];
+        if (!target || send.to === index || send.to === 0) continue;
+        const gain = this.ctx.createGain();
+        gain.gain.value = send.level;
+        strip.out.connect(gain);
+        gain.connect(target.input);
+        strip.sends.set(send.to, gain);
+      }
+      return;
+    }
+    for (const send of track.sends) {
+      const gain = strip.sends.get(send.to);
+      if (gain) setSmooth(gain.gain, send.level, this.ctx, false);
+    }
+  }
+
+  private syncEffects(strip: MixerStrip, trackIndex: number, slots: EffectSlot[], tempoChanged: boolean): void {
     const seen = new Set<string>();
     for (const slot of slots) {
       seen.add(slot.id);
@@ -194,7 +321,10 @@ export class AudioGraph {
       }
       if (entry.slot.params !== slot.params) {
         for (const [id, value] of Object.entries(slot.params)) {
-          if (entry.slot.params[id] !== value) entry.instance.setParam(id, value, slot.params);
+          if (entry.slot.params[id] === value) continue;
+          // An automated parameter follows its clip, not the knob.
+          if (this.automated({ kind: 'effect', track: trackIndex, slotId: slot.id, param: id }) !== undefined) continue;
+          entry.instance.setParam(id, value, slot.params);
         }
       }
       if (tempoChanged) entry.instance.setTempo?.(this.bpm, slot.params);
@@ -238,8 +368,10 @@ export class AudioGraph {
       }
       strip.channel = channel;
       strip.muted = channel.mute || (anySolo && !channel.solo);
-      setSmooth(strip.input.gain, strip.muted ? 0 : channel.volume, this.ctx, isNew);
-      setSmooth(strip.panner.pan, channel.pan, this.ctx, isNew);
+      const volume = this.automated({ kind: 'channel', channelId: channel.id, param: 'volume' }) ?? channel.volume;
+      const pan = this.automated({ kind: 'channel', channelId: channel.id, param: 'pan' }) ?? channel.pan;
+      setSmooth(strip.input.gain, strip.muted ? 0 : volume, this.ctx, isNew);
+      setSmooth(strip.panner.pan, pan, this.ctx, isNew);
       const target = Math.min(channel.mixerTrack, this.mixer.length - 1);
       if (strip.routedTo !== target) {
         disconnectAll(strip.panner);

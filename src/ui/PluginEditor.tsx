@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ParamValues } from '../model/types';
+import type { AutomationTarget, ParamValues } from '../model/types';
 import type { ParamSpec, Preset } from '../plugins/params';
 import { actions, pluginWindowKey, useStore, type PluginWindowRef } from '../state/store';
 import { getEffect, getInstrument } from '../plugins/registry';
-import { getDecodedSample } from '../audio/samples';
 import { engine } from '../audio/engine';
 import { keyName, isBlackKey } from '../model/time';
 import type { Voice } from '../plugins/types';
 import { Knob } from './controls';
 import { Window } from './Window';
 import { isAudioFile, loadSampleFile } from './fileOps';
+import { useDecodedSample } from './hooks';
 
 function groupParams(params: ParamSpec[]): Array<[string, ParamSpec[]]> {
   const groups = new Map<string, ParamSpec[]>();
@@ -21,7 +21,16 @@ function groupParams(params: ParamSpec[]): Array<[string, ParamSpec[]]> {
   return [...groups];
 }
 
-function ParamPanel({ specs, values, color, onChange }: { specs: ParamSpec[]; values: ParamValues; color: string; onChange(id: string, v: number): void }) {
+interface ParamPanelProps {
+  specs: ParamSpec[];
+  values: ParamValues;
+  color: string;
+  onChange(id: string, v: number): void;
+  /** Automation target for a param (offered in each knob's right-click menu). */
+  target(param: string): AutomationTarget;
+}
+
+function ParamPanel({ specs, values, color, onChange, target }: ParamPanelProps) {
   const groups = useMemo(() => groupParams(specs), [specs]);
   return (
     <div className="param-groups">
@@ -47,7 +56,15 @@ function ParamPanel({ specs, values, color, onChange }: { specs: ParamSpec[]; va
                   </select>
                 </label>
               ) : (
-                <Knob key={spec.id} value={values[spec.id] ?? spec.default} spec={spec} label={spec.name} color={color} onChange={(v) => onChange(spec.id, v)} />
+                <Knob
+                  key={spec.id}
+                  value={values[spec.id] ?? spec.default}
+                  spec={spec}
+                  label={spec.name}
+                  color={color}
+                  automation={target(spec.id)}
+                  onChange={(v) => onChange(spec.id, v)}
+                />
               ),
             )}
           </div>
@@ -70,14 +87,7 @@ function PresetSelect({ presets, onSelect }: { presets: Preset[]; onSelect(index
 
 function Waveform({ sampleId, color }: { sampleId?: string; color: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const [, setTick] = useState(0);
-  const buffer = getDecodedSample(sampleId);
-  // The sample may still be decoding; poll briefly until it is ready.
-  useEffect(() => {
-    if (!sampleId || buffer) return;
-    const id = setInterval(() => setTick((t) => t + 1), 200);
-    return () => clearInterval(id);
-  }, [sampleId, buffer]);
+  const buffer = useDecodedSample(sampleId);
   useEffect(() => {
     const el = canvas.current;
     const ctx = el?.getContext('2d');
@@ -162,13 +172,21 @@ function ChannelEditor({ channelId }: { channelId: string }) {
               ))}
             </select>
           </label>
-          <Knob value={channel.volume} spec={{ min: 0, max: 1.25, default: 0.78, unit: '%' }} label="Volume" size={28} onChange={(v) => a.updateChannel(channel.id, { volume: v }, false)} />
+          <Knob
+            value={channel.volume}
+            spec={{ min: 0, max: 1.25, default: 0.78, unit: '%' }}
+            label="Volume"
+            size={28}
+            automation={{ kind: 'channel', channelId: channel.id, param: 'volume' }}
+            onChange={(v) => a.updateChannel(channel.id, { volume: v }, false)}
+          />
           <Knob
             value={channel.pan}
             spec={{ min: -1, max: 1, default: 0 }}
             label="Pan"
             size={28}
             format={(v) => (Math.abs(v) < 0.005 ? 'Centro' : `${Math.round(Math.abs(v) * 100)}% ${v < 0 ? 'E' : 'D'}`)}
+            automation={{ kind: 'channel', channelId: channel.id, param: 'pan' }}
             onChange={(v) => a.updateChannel(channel.id, { pan: v }, false)}
           />
         </div>
@@ -197,7 +215,13 @@ function ChannelEditor({ channelId }: { channelId: string }) {
           </div>
         </div>
       )}
-      <ParamPanel specs={plugin.params} values={channel.params} color={channel.color} onChange={(id, v) => a.setChannelParam(channel.id, id, v)} />
+      <ParamPanel
+        specs={plugin.params}
+        values={channel.params}
+        color={channel.color}
+        onChange={(id, v) => a.setChannelParam(channel.id, id, v)}
+        target={(param) => ({ kind: 'instrument', channelId: channel.id, param })}
+      />
       <MiniKeyboard channelId={channel.id} rootKey={channel.rootKey} />
     </div>
   );
@@ -220,7 +244,13 @@ function EffectEditor({ track, slotId }: { track: number; slotId: string }) {
           </button>
         </div>
       </div>
-      <ParamPanel specs={plugin.params} values={slot.params} color="#ff8a3d" onChange={(id, v) => a.setEffectParam(track, slotId, id, v)} />
+      <ParamPanel
+        specs={plugin.params}
+        values={slot.params}
+        color="#ff8a3d"
+        onChange={(id, v) => a.setEffectParam(track, slotId, id, v)}
+        target={(param) => ({ kind: 'effect', track, slotId, param })}
+      />
     </div>
   );
 }

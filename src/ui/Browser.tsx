@@ -2,20 +2,23 @@ import { useState } from 'react';
 import { actions, useStore } from '../state/store';
 import { EFFECTS, INSTRUMENTS } from '../plugins/registry';
 import { confirmDiscard } from './fileOps';
+import { SampleBrowser } from './SampleBrowser';
 
 const SHORTCUTS: Array<[string, string]> = [
   ['Espaço', 'Tocar / parar'],
   ['L', 'Alternar PAT / SONG'],
   ['F5 F6 F7 F9', 'Playlist, Channel Rack, Piano Roll, Mixer'],
   ['Ctrl+Z / Ctrl+Y', 'Desfazer / refazer'],
-  ['Ctrl+S', 'Salvar projeto'],
+  ['Ctrl+S / Ctrl+Shift+S', 'Salvar / salvar como'],
+  ['Ctrl+O · Ctrl+N · Ctrl+R', 'Abrir · novo · exportar WAV (app desktop)'],
+  ['Botão direito num knob', 'Criar clip de automação'],
   ['Z S X … M', 'Tocar o canal selecionado (oitava 4)'],
   ['Q 2 W … U', 'Tocar o canal selecionado (oitava 5)'],
   ['Botão direito', 'Apagar nota / clip / passo'],
 ];
 
 export function Browser() {
-  const [open, setOpen] = useState<Record<string, boolean>>({ instruments: true, effects: true, patterns: true });
+  const [open, setOpen] = useState<Record<string, boolean>>({ samples: true, instruments: true, effects: false, patterns: true });
   const [expanded, setExpanded] = useState<string | null>(null);
   const patterns = useStore((s) => s.project.patterns);
   const selectedPatternId = useStore((s) => s.ui.selectedPatternId);
@@ -26,6 +29,13 @@ export function Browser() {
 
   return (
     <aside className="browser">
+      <section>
+        <button type="button" className="browser-head" onClick={() => toggle('samples')}>
+          {open.samples ? '▾' : '▸'} Samples
+        </button>
+        {open.samples && <SampleBrowser />}
+      </section>
+
       <section>
         <button type="button" className="browser-head" onClick={() => toggle('instruments')}>
           {open.instruments ? '▾' : '▸'} Instrumentos

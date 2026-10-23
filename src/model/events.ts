@@ -1,5 +1,6 @@
 import type { Project } from './types';
 import { findPattern, patternLength } from './pattern';
+import { TICKS_PER_STEP } from './time';
 
 /** A note to be played, positioned on the transport timeline (pattern or song). */
 export interface NoteEvent {
@@ -43,7 +44,7 @@ export function songEvents(project: Project, from: number, to: number): NoteEven
   for (const clip of project.playlist.clips) {
     const clipEnd = clip.start + clip.length;
     if (clip.start >= to || clipEnd <= from) continue;
-    if (project.playlist.tracks[clip.track]?.mute) continue;
+    if (clip.kind !== 'pattern' || project.playlist.tracks[clip.track]?.mute) continue;
     const pattern = findPattern(project, clip.patternId);
     if (!pattern) continue;
     const length = patternLength(pattern);
@@ -77,13 +78,13 @@ export function songEvents(project: Project, from: number, to: number): NoteEven
  * wraps at `loopLength`. Each event carries `offset`: ticks from the window
  * start until the note plays, which is what the scheduler converts to time.
  */
-export function loopedEvents(
-  source: (from: number, to: number) => NoteEvent[],
+export function loopedEvents<T extends { start: number }>(
+  source: (from: number, to: number) => T[],
   loopLength: number,
   position: number,
   span: number,
-): Array<NoteEvent & { offset: number }> {
-  const out: Array<NoteEvent & { offset: number }> = [];
+): Array<T & { offset: number }> {
+  const out: Array<T & { offset: number }> = [];
   if (loopLength <= 0 || span <= 0) return out;
   let pos = ((position % loopLength) + loopLength) % loopLength;
   let consumed = 0;
@@ -96,4 +97,48 @@ export function loopedEvents(
     pos = 0;
   }
   return out;
+}
+
+/** An audio clip starting on the timeline. */
+export interface AudioEvent {
+  channelId: string;
+  /** Song position in ticks. */
+  start: number;
+  length: number;
+  /** Seconds into the sample where playback starts. */
+  sampleOffset: number;
+}
+
+function audibleAudioClips(project: Project) {
+  const channelIds = new Set(project.channels.map((c) => c.id));
+  return project.playlist.clips.filter(
+    (c) => c.kind === 'audio' && channelIds.has(c.channelId) && !project.playlist.tracks[c.track]?.mute,
+  ) as Array<Extract<Project['playlist']['clips'][number], { kind: 'audio' }>>;
+}
+
+/** Audio clips starting in [from, to). */
+export function songAudioEvents(project: Project, from: number, to: number): AudioEvent[] {
+  return audibleAudioClips(project)
+    .filter((c) => c.start >= from && c.start < to)
+    .map((c) => ({ channelId: c.channelId, start: c.start, length: c.length, sampleOffset: c.offset }))
+    .sort((a, b) => a.start - b.start);
+}
+
+/**
+ * Audio clips already sounding at `position` (playback started in their
+ * middle), with the ticks elapsed since each clip began.
+ */
+export function audioClipsAt(project: Project, position: number): Array<AudioEvent & { elapsed: number }> {
+  return audibleAudioClips(project)
+    .filter((c) => c.start < position && position < c.start + c.length)
+    .map((c) => ({ channelId: c.channelId, start: c.start, length: c.length, sampleOffset: c.offset, elapsed: position - c.start }));
+}
+
+/**
+ * Swing: notes on every second 16th step are pushed late, by up to half a
+ * step at full swing. Returns the delay in ticks.
+ */
+export function swingDelay(start: number, swing: number): number {
+  if (swing <= 0) return 0;
+  return start % (TICKS_PER_STEP * 2) === TICKS_PER_STEP ? swing * (TICKS_PER_STEP / 2) : 0;
 }

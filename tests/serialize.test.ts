@@ -62,3 +62,60 @@ describe('project files', () => {
     expect(parseProject(JSON.parse(serializeProject(demo))).channels[0].sampleId).toBeUndefined();
   });
 });
+
+describe('project files with clips, routing and swing', () => {
+  it('round-trips audio and automation clips, sends and swing', () => {
+    const demo = createDemoProject();
+    const bass = demo.channels[4];
+    demo.swing = 0.4;
+    demo.mixer[5].sends = [{ to: 6, level: 0.5 }];
+    demo.mixer[5].toMaster = false;
+    demo.playlist.clips.push(
+      { id: 'au', kind: 'audio', channelId: bass.id, track: 5, start: 0, length: 384, offset: 1.25 },
+      {
+        id: 'au2',
+        kind: 'automation',
+        track: 6,
+        start: 0,
+        length: 768,
+        target: { kind: 'mixer', track: 5, param: 'volume' },
+        points: [
+          { t: 0, v: 0.2 },
+          { t: 768, v: 0.9 },
+        ],
+      },
+    );
+    expect(parseProject(JSON.parse(serializeProject(demo)))).toEqual(demo);
+  });
+
+  it('reads clips saved before clip kinds existed as pattern clips', () => {
+    const demo = createDemoProject();
+    const raw = JSON.parse(serializeProject(demo));
+    for (const c of raw.playlist.clips) delete c.kind;
+    delete raw.swing;
+    const parsed = parseProject(raw);
+    expect(parsed.playlist.clips.every((c) => c.kind === 'pattern')).toBe(true);
+    expect(parsed.swing).toBe(0);
+    expect(parsed.mixer[1].toMaster).toBe(true);
+  });
+
+  it('drops looping sends and automation of things that do not exist', () => {
+    const demo = createDemoProject();
+    const raw = JSON.parse(serializeProject(demo));
+    raw.mixer[1].sends = [{ to: 2, level: 1 }, { to: 1, level: 1 }, { to: 0, level: 1 }, { to: 99, level: 1 }];
+    raw.mixer[2].sends = [{ to: 1, level: 1 }];
+    raw.playlist.clips.push(
+      { kind: 'automation', track: 0, start: 0, length: 384, target: { kind: 'channel', channelId: 'gone', param: 'volume' }, points: [] },
+      { kind: 'automation', track: 0, start: 0, length: 384, target: { kind: 'mixer', track: 1, param: 'pan' }, points: [{ t: 9999, v: 7 }] },
+      { kind: 'audio', channelId: 'gone', track: 0, start: 0, length: 10 },
+      { kind: 'mystery', track: 0, start: 0, length: 10 },
+    );
+    const parsed = parseProject(raw);
+    expect(parsed.mixer[1].sends).toEqual([{ to: 2, level: 1 }]);
+    expect(parsed.mixer[2].sends).toEqual([]);
+    const automation = parsed.playlist.clips.filter((c) => c.kind === 'automation');
+    expect(automation).toHaveLength(1);
+    expect(automation[0].kind === 'automation' && automation[0].points).toEqual([{ t: 384, v: 1 }]);
+    expect(parsed.playlist.clips.some((c) => c.kind === 'audio')).toBe(false);
+  });
+});

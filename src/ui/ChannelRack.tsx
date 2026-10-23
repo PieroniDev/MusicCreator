@@ -6,10 +6,12 @@ import { TICKS_PER_STEP } from '../model/time';
 import { INSTRUMENTS, getInstrument } from '../plugins/registry';
 import { Knob, Led } from './controls';
 import { usePlayheadFrame } from './hooks';
-import { isAudioFile, loadSampleFile } from './fileOps';
+import { addSamplerChannel, loadSampleBytes, loadSampleFile } from './fileOps';
+import { isAudioDrag, readDroppedAudio } from './dnd';
 
 const VOLUME_SPEC = { min: 0, max: 1.25, default: 0.78, unit: '%', name: 'Volume' };
 const PAN_SPEC = { min: -1, max: 1, default: 0, name: 'Pan' };
+const SWING_SPEC = { min: 0, max: 1, default: 0, unit: '%', name: 'Swing' };
 const formatPan = (v: number) => (Math.abs(v) < 0.005 ? 'Centro' : `${Math.round(Math.abs(v) * 100)}% ${v < 0 ? 'E' : 'D'}`);
 
 /** Read-only miniature of a channel's piano roll notes. */
@@ -53,19 +55,20 @@ const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected,
     <div
       className={`rack-row${selected ? ' selected' : ''}${dropping ? ' dropping' : ''}`}
       onDragOver={(e) => {
-        if (plugin?.usesSample && e.dataTransfer.types.includes('Files')) {
+        if (plugin?.usesSample && isAudioDrag(e.dataTransfer)) {
           e.preventDefault();
+          e.stopPropagation();
           setDropping(true);
         }
       }}
       onDragLeave={() => setDropping(false)}
       onDrop={(e) => {
         setDropping(false);
-        const file = e.dataTransfer.files[0];
-        if (plugin?.usesSample && file && isAudioFile(file)) {
-          e.preventDefault();
-          void loadSampleFile(channel.id, file);
-        }
+        if (!plugin?.usesSample || !isAudioDrag(e.dataTransfer)) return;
+        // Replaces this Sampler's sound instead of adding a channel.
+        e.preventDefault();
+        e.stopPropagation();
+        void readDroppedAudio(e.dataTransfer).then((audio) => audio && loadSampleBytes(channel.id, audio.name, audio.bytes));
       }}
     >
       <Led
@@ -75,8 +78,23 @@ const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected,
         onContextMenu={() => a.soloChannel(channel.id)}
         title={`Ligado/mudo (clique) · solo (botão direito)${channel.solo ? ' — em solo' : ''}`}
       />
-      <Knob value={channel.pan} spec={PAN_SPEC} size={22} showValue={false} format={formatPan} label={undefined} onChange={(v) => a.updateChannel(channel.id, { pan: v }, false)} />
-      <Knob value={channel.volume} spec={VOLUME_SPEC} size={22} showValue={false} onChange={(v) => a.updateChannel(channel.id, { volume: v }, false)} />
+      <Knob
+        value={channel.pan}
+        spec={PAN_SPEC}
+        size={22}
+        showValue={false}
+        format={formatPan}
+        automation={{ kind: 'channel', channelId: channel.id, param: 'pan' }}
+        onChange={(v) => a.updateChannel(channel.id, { pan: v }, false)}
+      />
+      <Knob
+        value={channel.volume}
+        spec={VOLUME_SPEC}
+        size={22}
+        showValue={false}
+        automation={{ kind: 'channel', channelId: channel.id, param: 'volume' }}
+        onChange={(v) => a.updateChannel(channel.id, { volume: v }, false)}
+      />
       <input
         className="rack-track"
         type="number"
@@ -198,12 +216,25 @@ export function ChannelRack() {
   const pattern = useStore(selectedPattern);
   const selectedChannelId = useStore((s) => s.ui.selectedChannelId);
   const onlyPattern = useStore((s) => s.project.patterns.length <= 1);
+  const swing = useStore((s) => s.project.swing);
   const [adding, setAdding] = useState(false);
   const steps = patternSteps(pattern);
   const a = actions();
 
   return (
-    <div className="channel-rack">
+    <div
+      className="channel-rack"
+      onDragOver={(e) => {
+        if (!isAudioDrag(e.dataTransfer)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      }}
+      onDrop={(e) => {
+        if (!isAudioDrag(e.dataTransfer)) return;
+        e.preventDefault();
+        void readDroppedAudio(e.dataTransfer).then((audio) => audio && addSamplerChannel(audio.name, audio.bytes));
+      }}
+    >
       <div className="rack-header">
         <span className="pattern-chip" style={{ background: pattern.color }}>
           {pattern.name}
@@ -227,6 +258,11 @@ export function ChannelRack() {
           Renomear
         </button>
         <button type="button" className="text-btn" onClick={() => a.clonePattern(pattern.id)}>Clonar</button>
+        <span className="inline-field swing" title="Swing: atrasa cada segunda semicolcheia (vale para o projeto todo)">
+          Swing
+          <Knob value={swing} spec={SWING_SPEC} size={22} showValue={false} onChange={(v) => a.setSwing(v, true)} />
+          <span className="swing-value">{Math.round(swing * 100)}%</span>
+        </span>
         <button
           type="button"
           className="text-btn danger"

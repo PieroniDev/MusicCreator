@@ -1,4 +1,19 @@
-import type { Channel, EffectSlot, MixerTrack, Note, Pattern, PlaylistClip, PlaylistTrack, Project, SampleAsset } from './types';
+import type {
+  AutomationPoint,
+  AutomationTarget,
+  Channel,
+  EffectSlot,
+  MixerSend,
+  MixerTrack,
+  Note,
+  Pattern,
+  PlaylistClip,
+  PlaylistTrack,
+  Project,
+  SampleAsset,
+} from './types';
+import { canRoute } from './routing';
+import { targetExists } from './automation';
 import { colorAt, createMixerTrack, createPlaylistTracks, MAX_EFFECT_SLOTS, MIXER_INSERTS, PLAYLIST_TRACKS, uid } from './defaults';
 import { getEffect, getInstrument, DEFAULT_INSTRUMENT } from '../plugins/registry';
 import { normalizeParams } from '../plugins/params';
@@ -91,7 +106,87 @@ function parseMixerTrack(v: unknown, i: number): MixerTrack {
       .map(parseEffect)
       .filter((e): e is EffectSlot => e !== null)
       .slice(0, MAX_EFFECT_SLOTS),
+    toMaster: v.toMaster !== false,
+    // Raw sends; validated once the whole mixer is known (see parseSends).
+    sends: arr(v.sends)
+      .filter(isObj)
+      .map((x) => ({ to: Math.round(num(x.to, -1)), level: num(x.level, 1, 0, 2) })),
   };
+}
+
+/** Keeps only sends that point at another insert without creating a loop. */
+function parseSends(mixer: MixerTrack[]): void {
+  const raw = mixer.map((t) => t.sends);
+  for (const t of mixer) t.sends = [];
+  raw.forEach((sends, from) => {
+    for (const send of sends) {
+      if (mixer[from].sends.some((x) => x.to === send.to)) continue;
+      if (canRoute(mixer, from, send.to)) mixer[from].sends.push(send as MixerSend);
+    }
+  });
+}
+
+function parseTarget(v: unknown, mixerSize: number): AutomationTarget | null {
+  if (!isObj(v)) return null;
+  const track = Math.round(num(v.track, -1));
+  const validTrack = track >= 0 && track < mixerSize;
+  switch (v.kind) {
+    case 'channel':
+      return typeof v.channelId === 'string' && (v.param === 'volume' || v.param === 'pan')
+        ? { kind: 'channel', channelId: v.channelId, param: v.param }
+        : null;
+    case 'instrument':
+      return typeof v.channelId === 'string' && typeof v.param === 'string'
+        ? { kind: 'instrument', channelId: v.channelId, param: v.param }
+        : null;
+    case 'mixer':
+      return validTrack && (v.param === 'volume' || v.param === 'pan') ? { kind: 'mixer', track, param: v.param } : null;
+    case 'effect':
+      return validTrack && typeof v.slotId === 'string' && typeof v.param === 'string'
+        ? { kind: 'effect', track, slotId: v.slotId, param: v.param }
+        : null;
+    default:
+      return null;
+  }
+}
+
+function parsePoints(v: unknown, length: number): AutomationPoint[] {
+  const points = arr(v)
+    .filter(isObj)
+    .map((p) => ({ t: num(p.t, 0, 0, length), v: num(p.v, 0.5, 0, 1) }))
+    .sort((a, b) => a.t - b.t);
+  return points.length ? points.slice(0, 2000) : [{ t: 0, v: 0.5 }];
+}
+
+interface ClipContext {
+  patternIds: Set<string>;
+  channelIds: Set<string>;
+  trackCount: number;
+  mixerSize: number;
+}
+
+function parseClip(c: Record<string, unknown>, ctx: ClipContext): PlaylistClip | null {
+  const base = {
+    id: str(c.id, uid('cl')),
+    track: Math.round(num(c.track, 0, 0, ctx.trackCount - 1)),
+    start: num(c.start, 0, 0, 1e8),
+    length: num(c.length, 384, 1, 1e8),
+  };
+  // Clips from before audio/automation clips existed have no kind.
+  const kind = c.kind ?? 'pattern';
+  if (kind === 'pattern') {
+    return typeof c.patternId === 'string' && ctx.patternIds.has(c.patternId) ? { ...base, kind, patternId: c.patternId } : null;
+  }
+  if (kind === 'audio') {
+    return typeof c.channelId === 'string' && ctx.channelIds.has(c.channelId)
+      ? { ...base, kind, channelId: c.channelId, offset: num(c.offset, 0, 0, 1e6) }
+      : null;
+  }
+  if (kind === 'automation') {
+    const target = parseTarget(c.target, ctx.mixerSize);
+    return target ? { ...base, kind, target, points: parsePoints(c.points, base.length) } : null;
+  }
+  return null;
 }
 
 /**
@@ -107,6 +202,7 @@ export function parseProject(input: unknown): Project {
   const mixer = Array.from({ length: Math.max(MIXER_INSERTS + 1, Math.min(rawMixer.length, 128)) }, (_, i) =>
     parseMixerTrack(rawMixer[i], i),
   );
+  parseSends(mixer);
   const channels = input.channels
     .map((c, i) => parseChannel(c, i, mixer.length))
     .filter((c): c is Channel => c !== null);
@@ -127,16 +223,11 @@ export function parseProject(input: unknown): Project {
     const fallback = defaultTracks[i] ?? { id: uid('tr'), name: `Faixa ${i + 1}`, mute: false };
     return isObj(t) ? { id: str(t.id, fallback.id), name: str(t.name, fallback.name), mute: bool(t.mute) } : fallback;
   });
+  const clipContext: ClipContext = { patternIds, channelIds, trackCount: tracks.length, mixerSize: mixer.length };
   const clips: PlaylistClip[] = arr(playlist.clips)
     .filter(isObj)
-    .filter((c) => typeof c.patternId === 'string' && patternIds.has(c.patternId))
-    .map((c) => ({
-      id: str(c.id, uid('cl')),
-      patternId: c.patternId as string,
-      track: Math.round(num(c.track, 0, 0, tracks.length - 1)),
-      start: num(c.start, 0, 0, 1e8),
-      length: num(c.length, 384, 1, 1e8),
-    }));
+    .map((c) => parseClip(c, clipContext))
+    .filter((c): c is PlaylistClip => c !== null);
 
   const samples: Record<string, SampleAsset> = {};
   if (isObj(input.samples)) {
@@ -146,16 +237,20 @@ export function parseProject(input: unknown): Project {
   }
   for (const c of channels) if (c.sampleId && !samples[c.sampleId]) c.sampleId = undefined;
 
-  return {
+  const project: Project = {
     version: 1,
     name: str(input.name, 'Sem título'),
     bpm: num(input.bpm, 130, 20, 400),
+    swing: num(input.swing, 0, 0, 1),
     channels,
     patterns,
     playlist: { tracks, clips },
     mixer,
     samples,
   };
+  // Automation of things that no longer exist (deleted channel, effect...) is dropped.
+  project.playlist.clips = clips.filter((c) => c.kind !== 'automation' || targetExists(project, c.target));
+  return project;
 }
 
 export function serializeProject(project: Project): string {

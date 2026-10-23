@@ -55,7 +55,7 @@ export const sampler: InstrumentPlugin = {
     { name: 'Lo-fi', params: { cutoff: 2200, resonance: 2, coarse: -2 } },
   ],
 
-  noteOn(ctx, destination, { key, velocity, time, rootKey, params: values, sample }) {
+  noteOn(ctx, destination, { key, velocity, time, rootKey, params: values, sample, offset: clipOffset = 0, gated = false }) {
     const p = paramReader(params, values);
     const voice = new NodeVoice(ctx, destination);
     const filter = voice.node(ctx.createBiquadFilter());
@@ -78,7 +78,7 @@ export const sampler: InstrumentPlugin = {
     src.buffer = buffer;
     const semis = (p('keytrack') >= 0.5 ? key - rootKey : 0) + p('coarse') + p('fine') / 100;
     src.playbackRate.value = Math.pow(2, semis / 12);
-    const offset = p('start') * buffer.duration;
+    const offset = Math.min(buffer.duration, p('start') * buffer.duration + clipOffset);
     const loop = p('loop') >= 0.5;
     if (loop) {
       src.loop = true;
@@ -95,7 +95,7 @@ export const sampler: InstrumentPlugin = {
       velocity * p('gain'),
     );
     // One-shots ignore the note length and play the whole sample.
-    if (loop || p('oneShot') < 0.5) voice.envelope(env);
+    if (loop || gated || p('oneShot') < 0.5) voice.envelope(env);
     return voice;
   },
 };

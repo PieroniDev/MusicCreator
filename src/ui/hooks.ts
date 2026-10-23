@@ -1,5 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { engine } from '../audio/engine';
+import { getDecodedSample, subscribeSamples } from '../audio/samples';
 
 export function usePlaying(): boolean {
   return useSyncExternalStore(
@@ -44,4 +45,9 @@ export function useElementSize<T extends HTMLElement>(ref: React.RefObject<T | n
     cb.current(el.clientWidth, el.clientHeight);
     return () => ro.disconnect();
   }, [ref]);
+}
+
+/** The decoded audio of a sample asset, re-rendering once decoding finishes. */
+export function useDecodedSample(sampleId: string | undefined): AudioBuffer | undefined {
+  return useSyncExternalStore(subscribeSamples, () => getDecodedSample(sampleId));
 }

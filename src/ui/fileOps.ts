@@ -123,36 +123,36 @@ export async function exportWav(onProgress: (fraction: number) => void): Promise
 const AUDIO_ACCEPT = 'audio/*,.wav,.mp3,.ogg,.flac,.aif,.aiff,.m4a';
 const MAX_SAMPLE_BYTES = 50 * 1024 * 1024;
 
-/** Checks the bytes are audio the engine can decode; returns them base64-encoded. */
-async function validateAudio(name: string, bytes: Uint8Array): Promise<string | null> {
+/** Checks the bytes are audio the engine can decode; returns them base64-encoded with their duration. */
+async function validateAudio(name: string, bytes: Uint8Array): Promise<{ data: string; duration: number } | null> {
   if (bytes.byteLength > MAX_SAMPLE_BYTES) {
     alert(`"${name}" é grande demais (máximo 50 MB).`);
     return null;
   }
   try {
-    await engine.ensureRunning().decodeAudioData(bytes.slice().buffer);
+    const buffer = await engine.ensureRunning().decodeAudioData(bytes.slice().buffer);
+    return { data: bytesToBase64(bytes), duration: buffer.duration };
   } catch {
     alert(`Não foi possível ler "${name}" como áudio.`);
     return null;
   }
-  return bytesToBase64(bytes);
 }
 
 /** Puts audio into a channel's sampler. */
 export async function loadSampleBytes(channelId: string, name: string, bytes: Uint8Array): Promise<boolean> {
-  const data = await validateAudio(name, bytes);
-  if (data) actions().setChannelSample(channelId, name, data);
-  return !!data;
+  const audio = await validateAudio(name, bytes);
+  if (audio) actions().setChannelSample(channelId, name, audio.data);
+  return !!audio;
 }
 
-/** Creates a Sampler channel playing the given audio; returns its id. */
-export async function addSamplerChannel(name: string, bytes: Uint8Array): Promise<string | null> {
-  const data = await validateAudio(name, bytes);
-  if (!data) return null;
+/** Creates a Sampler channel playing the given audio; returns its id and the audio's length in seconds. */
+export async function addSamplerChannel(name: string, bytes: Uint8Array): Promise<{ id: string; duration: number } | null> {
+  const audio = await validateAudio(name, bytes);
+  if (!audio) return null;
   const a = actions();
   const id = a.addChannel('sampler');
-  a.setChannelSample(id, name, data);
-  return id;
+  a.setChannelSample(id, name, audio.data);
+  return { id, duration: audio.duration };
 }
 
 /** Reads an audio file chosen by the user (or dropped) into a channel's sampler. */

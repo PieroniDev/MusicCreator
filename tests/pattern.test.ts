@@ -24,7 +24,7 @@ describe('pattern helpers', () => {
   it('measures the song in whole bars', () => {
     const project = createEmptyProject();
     expect(songLength(project)).toBe(TICKS_PER_BAR);
-    project.playlist.clips.push({ id: 'c', patternId: project.patterns[0].id, track: 0, start: 100, length: TICKS_PER_BAR });
+    project.playlist.clips.push({ id: 'c', kind: 'pattern' as const, patternId: project.patterns[0].id, track: 0, start: 100, length: TICKS_PER_BAR });
     expect(songLength(project)).toBe(2 * TICKS_PER_BAR);
   });
 });

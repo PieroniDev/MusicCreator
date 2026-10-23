@@ -6,10 +6,11 @@ import { DragNumber, IconButton } from './controls';
 import { usePlayheadFrame, usePlaying } from './hooks';
 import { newProject, openProject, saveProject } from './fileOps';
 import { runExport, useExportProgress } from './exporter';
+import { enableMidi, useMidi } from '../audio/midi';
 
-const WINDOW_BUTTONS: Array<{ id: WindowId; label: string; key: string }> = [
+const WINDOW_BUTTONS: Array<{ id: WindowId; label: string; key: string; name?: string }> = [
   { id: 'playlist', label: 'Playlist', key: 'F5' },
-  { id: 'channelRack', label: 'Channel Rack', key: 'F6' },
+  { id: 'channelRack', label: 'Rack', key: 'F6', name: 'Channel Rack' },
   { id: 'pianoRoll', label: 'Piano Roll', key: 'F7' },
   { id: 'mixer', label: 'Mixer', key: 'F9' },
 ];
@@ -32,6 +33,8 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
   const playing = usePlaying();
   const mode = useStore((s) => s.ui.mode);
   const metronome = useStore((s) => s.ui.metronome);
+  const recording = useStore((s) => s.ui.recording);
+  const midi = useMidi();
   const bpm = useStore((s) => s.project.bpm);
   const name = useStore((s) => s.project.name);
   const patterns = useStore((s) => s.project.patterns);
@@ -66,7 +69,7 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
           Salvar
         </IconButton>
         <IconButton onClick={() => void runExport()} title={`Exportar ${mode === 'song' ? 'a música' : 'o pattern'} como WAV`} disabled={exporting !== null}>
-          {exporting === null ? 'Exportar WAV' : `Renderizando ${Math.round(exporting * 100)}%`}
+          {exporting === null ? 'Exportar' : `Renderizando ${Math.round(exporting * 100)}%`}
         </IconButton>
       </div>
 
@@ -91,8 +94,38 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
         <button type="button" className={`play-btn${playing ? ' playing' : ''}`} onClick={() => engine.toggle()} title="Tocar / parar (Espaço)">
           {playing ? '■' : '▶'}
         </button>
+        <button
+          type="button"
+          className={`rec-btn${recording ? ' armed' : ''}`}
+          onClick={() => actions().toggleRecording()}
+          title={
+            recording
+              ? 'Gravação armada: as notas tocadas (teclado ou MIDI) entram no pattern enquanto ele toca (modo PAT)'
+              : 'Armar gravação de notas'
+          }
+        >
+          ●
+        </button>
         <IconButton active={metronome} onClick={() => actions().toggleMetronome()} title="Metrônomo">
           ♩
+        </IconButton>
+        <IconButton
+          active={midi.state === 'on' && midi.inputs.length > 0}
+          disabled={midi.state === 'unsupported'}
+          onClick={() => void enableMidi()}
+          title={
+            midi.state === 'unsupported'
+              ? 'Este navegador não tem suporte a MIDI'
+              : midi.state === 'denied'
+                ? 'Acesso ao MIDI negado'
+                : midi.state === 'on'
+                  ? midi.inputs.length
+                    ? `Teclados MIDI: ${midi.inputs.join(', ')}`
+                    : 'MIDI ligado — nenhum teclado conectado'
+                  : 'Ligar teclados MIDI'
+          }
+        >
+          MIDI{midi.state === 'on' ? ` ${midi.inputs.length}` : ''}
         </IconButton>
         <TimeDisplay />
         <div className="bpm" title="Andamento: arraste para cima/baixo ou dê duplo clique para digitar">
@@ -129,7 +162,7 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
 
       <div className="tool-group windows">
         {WINDOW_BUTTONS.map((b) => (
-          <IconButton key={b.id} active={windows[b.id].open} onClick={() => actions().toggleWindow(b.id)} title={`${b.label} (${b.key})`}>
+          <IconButton key={b.id} active={windows[b.id].open} onClick={() => actions().toggleWindow(b.id)} title={`${b.name ?? b.label} (${b.key})`}>
             {b.label}
           </IconButton>
         ))}

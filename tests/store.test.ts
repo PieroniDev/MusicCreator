@@ -111,3 +111,77 @@ describe('store', () => {
     expect(s().project.channels.some((c) => c.solo)).toBe(false);
   });
 });
+
+describe('store: clips, routing, swing and saved state', () => {
+  it('creates an automation clip on a free lane holding the current value', () => {
+    const channel = s().project.channels[0];
+    const id = s().addAutomationClip({ kind: 'channel', channelId: channel.id, param: 'volume' })!;
+    const clip = s().project.playlist.clips.find((c) => c.id === id)!;
+    expect(clip.kind).toBe('automation');
+    if (clip.kind !== 'automation') return;
+    expect(clip.points[0].v).toBeCloseTo(channel.volume / 1.25);
+    expect(s().project.playlist.tracks[clip.track].name).toContain(channel.name);
+    expect(s().addAutomationClip({ kind: 'channel', channelId: 'gone', param: 'volume' })).toBeNull();
+  });
+
+  it('removes audio clips and automation with the channel they belong to', () => {
+    const id = s().addChannel('sampler');
+    s().addAudioClip(id, 0, 0, 384);
+    s().addAutomationClip({ kind: 'instrument', channelId: id, param: 'cutoff' });
+    expect(s().project.playlist.clips).toHaveLength(2);
+    s().removeChannel(id);
+    expect(s().project.playlist.clips).toHaveLength(0);
+  });
+
+  it('removes automation of a deleted effect', () => {
+    const slot = s().addEffect(2, 'reverb')!;
+    s().addAutomationClip({ kind: 'effect', track: 2, slotId: slot, param: 'mix' });
+    s().removeEffect(2, slot);
+    expect(s().project.playlist.clips.some((c) => c.kind === 'automation')).toBe(false);
+  });
+
+  it('keeps points sorted and inside the clip', () => {
+    const id = s().addAutomationClip({ kind: 'mixer', track: 1, param: 'pan' })!;
+    s().setAutomationPoints(id, [{ t: 500, v: 2 }, { t: -5, v: 0.5 }, { t: 1e9, v: -1 }]);
+    const clip = s().project.playlist.clips.find((c) => c.id === id)!;
+    if (clip.kind !== 'automation') throw new Error('expected automation');
+    expect(clip.points).toEqual([{ t: 0, v: 0.5 }, { t: 500, v: 1 }, { t: clip.length, v: 0 }]);
+    s().updateClip(id, { length: 384 });
+    const shorter = s().project.playlist.clips.find((c) => c.id === id)!;
+    if (shorter.kind !== 'automation') throw new Error('expected automation');
+    expect(Math.max(...shorter.points.map((p) => p.t))).toBe(384);
+  });
+
+  it('adds, changes and removes sends but refuses loops', () => {
+    s().setSend(1, 2, 1);
+    s().setSend(1, 2, 0.5);
+    expect(s().project.mixer[1].sends).toEqual([{ to: 2, level: 0.5 }]);
+    s().setSend(2, 1, 1);
+    expect(s().project.mixer[2].sends).toEqual([]);
+    s().setSend(1, 2, null);
+    expect(s().project.mixer[1].sends).toEqual([]);
+    s().setToMaster(1, false);
+    expect(s().project.mixer[1].toMaster).toBe(false);
+  });
+
+  it('clamps swing', () => {
+    s().setSwing(3);
+    expect(s().project.swing).toBe(1);
+  });
+
+  it('tracks unsaved changes against the last save', async () => {
+    const { isDirty } = await import('../src/state/store');
+    expect(isDirty(s())).toBe(false);
+    s().setBpm(99);
+    expect(isDirty(s())).toBe(true);
+    s().markSaved('/tmp/song.mcproj');
+    expect(isDirty(s())).toBe(false);
+    expect(s().doc.path).toBe('/tmp/song.mcproj');
+    s().undo();
+    expect(isDirty(s())).toBe(true);
+    s().redo();
+    expect(isDirty(s())).toBe(false);
+    s().loadProject(s().project, null, false);
+    expect(isDirty(s())).toBe(true);
+  });
+});

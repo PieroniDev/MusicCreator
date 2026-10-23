@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { produce, type Draft } from 'immer';
-import type { Channel, EffectSlot, MixerTrack, Note, PlayMode, PlaylistClip, Project } from '../model/types';
+import type { AutomationPoint, AutomationTarget, Channel, EffectSlot, MixerTrack, Note, PlayMode, PlaylistClip, Project } from '../model/types';
+import { describeTarget } from '../model/automation';
+import { canRoute } from '../model/routing';
 import {
   colorAt,
   createChannel,
@@ -12,12 +14,34 @@ import {
   MAX_EFFECT_SLOTS,
   uid,
 } from '../model/defaults';
-import { findPattern, patternLength } from '../model/pattern';
-import { TICKS_PER_STEP } from '../model/time';
+import { findPattern, patternLength, songLength } from '../model/pattern';
+import { TICKS_PER_BAR, TICKS_PER_STEP } from '../model/time';
 import { getEffect, getInstrument } from '../plugins/registry';
 import { clampParam, normalizeParams } from '../plugins/params';
 
 export type WindowId = 'channelRack' | 'playlist' | 'pianoRoll' | 'mixer';
+
+/** Editable fields of a playlist clip (others are fixed at creation). */
+export interface ClipPatch {
+  track?: number;
+  start?: number;
+  length?: number;
+  /** Audio clips: seconds into the sample. */
+  offset?: number;
+}
+
+/**
+ * Drops clips that point at something deleted: audio clips of removed
+ * channels and automation of removed channels, effects or parameters.
+ */
+function pruneClips(d: Draft<Project>): void {
+  const channelIds = new Set(d.channels.map((c) => c.id));
+  d.playlist.clips = d.playlist.clips.filter((c) => {
+    if (c.kind === 'audio') return channelIds.has(c.channelId);
+    if (c.kind === 'automation') return describeTarget(d as Project, c.target) !== null;
+    return true;
+  });
+}
 
 export interface WindowState {
   open: boolean;
@@ -43,6 +67,8 @@ export interface UIState {
   mode: PlayMode;
   songStart: number;
   metronome: boolean;
+  /** Record armed: notes played live are written into the pattern while it plays. */
+  recording: boolean;
   windows: Record<WindowId, WindowState>;
   pluginWindows: Array<PluginWindowRef & { x: number; y: number; z: number }>;
   topZ: number;
@@ -129,7 +155,10 @@ export interface AppState {
   clearNotes(patternId: string, channelId: string): void;
 
   addClip(patternId: string, track: number, start: number, length?: number): string;
-  updateClip(id: string, patch: Partial<Omit<PlaylistClip, 'id'>>, history?: boolean): void;
+  addAudioClip(channelId: string, track: number, start: number, length: number): string;
+  addAutomationClip(target: AutomationTarget): string | null;
+  updateClip(id: string, patch: ClipPatch, history?: boolean): void;
+  setAutomationPoints(id: string, points: AutomationPoint[]): void;
   removeClip(id: string, history?: boolean): void;
   updateTrack(index: number, patch: { name?: string; mute?: boolean }): void;
 
@@ -141,6 +170,9 @@ export interface AppState {
   toggleEffect(track: number, slotId: string): void;
   setEffectParam(track: number, slotId: string, param: string, value: number): void;
   applyEffectPreset(track: number, slotId: string, presetIndex: number): void;
+  setSend(from: number, to: number, level: number | null, history?: boolean): void;
+  setToMaster(index: number, on: boolean): void;
+  setSwing(value: number, gesture?: boolean): void;
 
   selectPattern(id: string): void;
   selectChannel(id: string | null): void;
@@ -148,6 +180,7 @@ export interface AppState {
   setMode(mode: PlayMode): void;
   setSongStart(tick: number): void;
   toggleMetronome(): void;
+  toggleRecording(): void;
   toggleWindow(id: WindowId, open?: boolean): void;
   focusWindow(id: WindowId): void;
   setWindowRect(id: WindowId, rect: Partial<Pick<WindowState, 'x' | 'y' | 'w' | 'h'>>): void;
@@ -168,6 +201,7 @@ function initialUI(project: Project): UIState {
     mode: 'pattern',
     songStart: 0,
     metronome: false,
+    recording: false,
     windows: structuredClone(DEFAULT_WINDOWS),
     pluginWindows: [],
     topZ: 10,
@@ -297,6 +331,7 @@ export const useStore = create<AppState>()((set, get) => {
       mutate((d) => {
         d.channels = d.channels.filter((c) => c.id !== id);
         for (const p of d.patterns) delete p.notes[id];
+        pruneClips(d);
         const used = new Set(d.channels.map((c) => c.sampleId).filter(Boolean));
         for (const sampleId of Object.keys(d.samples)) if (!used.has(sampleId)) delete d.samples[sampleId];
       });
@@ -396,7 +431,7 @@ export const useStore = create<AppState>()((set, get) => {
       if (get().project.patterns.length <= 1) return;
       mutate((d) => {
         d.patterns = d.patterns.filter((p) => p.id !== id);
-        d.playlist.clips = d.playlist.clips.filter((c) => c.patternId !== id);
+        d.playlist.clips = d.playlist.clips.filter((c) => c.kind !== 'pattern' || c.patternId !== id);
       });
     },
     updatePattern(id, patch) {
@@ -472,8 +507,48 @@ export const useStore = create<AppState>()((set, get) => {
       const pattern = findPattern(get().project, patternId);
       const id = uid('cl');
       if (!pattern) return id;
-      const clip: PlaylistClip = { id, patternId, track, start: Math.max(0, start), length: length ?? patternLength(pattern) };
+      const clip: PlaylistClip = { id, kind: 'pattern', patternId, track, start: Math.max(0, start), length: length ?? patternLength(pattern) };
       mutate((d) => void d.playlist.clips.push(clip));
+      return id;
+    },
+    addAudioClip(channelId, track, start, length) {
+      const id = uid('cl');
+      mutate((d) => {
+        if (!d.channels.some((c) => c.id === channelId)) return;
+        d.playlist.clips.push({ id, kind: 'audio', channelId, track, start: Math.max(0, start), length: Math.max(TICKS_PER_STEP, length), offset: 0 });
+      });
+      return id;
+    },
+    addAutomationClip(target) {
+      const project = get().project;
+      const info = describeTarget(project, target);
+      if (!info) return null;
+      const { clips, tracks } = project.playlist;
+      // Like other DAWs: a fresh lane below the song, spanning the whole song.
+      const used = new Set(clips.map((c) => c.track));
+      let track = tracks.findIndex((_, i) => !used.has(i));
+      const id = uid('cl');
+      const length = Math.max(songLength(project), TICKS_PER_BAR * 4);
+      const value = info.toNorm(info.current);
+      mutate((d) => {
+        if (track < 0) {
+          d.playlist.tracks.push({ id: uid('tr'), name: `Faixa ${d.playlist.tracks.length + 1}`, mute: false });
+          track = d.playlist.tracks.length - 1;
+        }
+        d.playlist.tracks[track].name = info.label;
+        d.playlist.clips.push({
+          id,
+          kind: 'automation',
+          target,
+          track,
+          start: 0,
+          length,
+          points: [
+            { t: 0, v: value },
+            { t: length, v: value },
+          ],
+        });
+      });
       return id;
     },
     updateClip(id, patch, history = false) {
@@ -483,8 +558,19 @@ export const useStore = create<AppState>()((set, get) => {
         if (patch.track !== undefined) c.track = Math.min(d.playlist.tracks.length - 1, Math.max(0, patch.track));
         if (patch.start !== undefined) c.start = Math.max(0, patch.start);
         if (patch.length !== undefined) c.length = Math.max(TICKS_PER_STEP, patch.length);
-        if (patch.patternId !== undefined) c.patternId = patch.patternId;
+        if (patch.offset !== undefined && c.kind === 'audio') c.offset = Math.max(0, patch.offset);
+        // Points past a shortened automation clip's end are clamped onto it.
+        if (c.kind === 'automation') for (const p of c.points) p.t = Math.min(p.t, c.length);
       }, history);
+    },
+    setAutomationPoints(id, points) {
+      mutate((d) => {
+        const c = d.playlist.clips.find((x) => x.id === id);
+        if (!c || c.kind !== 'automation' || points.length === 0) return;
+        c.points = points
+          .map((p) => ({ t: Math.min(c.length, Math.max(0, p.t)), v: Math.min(1, Math.max(0, p.v)) }))
+          .sort((a, b) => a.t - b.t);
+      }, false);
     },
     removeClip(id, history = true) {
       mutate((d) => void (d.playlist.clips = d.playlist.clips.filter((c) => c.id !== id)), history);
@@ -524,12 +610,14 @@ export const useStore = create<AppState>()((set, get) => {
         const i = effects?.findIndex((e) => e.id === slotId) ?? -1;
         // A new id so the engine builds a fresh instance and open editors close.
         if (effects && i >= 0) effects[i] = createEffectSlot(pluginId);
+        pruneClips(d);
       });
     },
     removeEffect(track, slotId) {
       mutate((d) => {
         const t = d.mixer[track];
         if (t) t.effects = t.effects.filter((e) => e.id !== slotId);
+        pruneClips(d);
       });
     },
     moveEffect(track, slotId, direction) {
@@ -564,6 +652,32 @@ export const useStore = create<AppState>()((set, get) => {
       });
     },
 
+    setSend(from, to, level, history = true) {
+      const { mixer } = get().project;
+      const exists = mixer[from]?.sends.some((x) => x.to === to);
+      if (level !== null && !exists && !canRoute(mixer, from, to)) return;
+      mutate((d) => {
+        const t = d.mixer[from];
+        if (!t) return;
+        if (level === null) t.sends = t.sends.filter((x) => x.to !== to);
+        else {
+          const send = t.sends.find((x) => x.to === to);
+          if (send) send.level = Math.min(2, Math.max(0, level));
+          else t.sends.push({ to, level: Math.min(2, Math.max(0, level)) });
+        }
+      }, history);
+    },
+    setToMaster(index, on) {
+      if (index <= 0) return;
+      mutate((d) => {
+        const t = d.mixer[index];
+        if (t) t.toMaster = on;
+      });
+    },
+    setSwing(value, gesture = false) {
+      mutate((d) => void (d.swing = Math.min(1, Math.max(0, value))), !gesture);
+    },
+
     selectPattern(id) {
       ui((u) => void (u.selectedPatternId = id));
     },
@@ -578,6 +692,9 @@ export const useStore = create<AppState>()((set, get) => {
     },
     setSongStart(tick) {
       ui((u) => void (u.songStart = Math.max(0, tick)));
+    },
+    toggleRecording() {
+      ui((u) => void (u.recording = !u.recording));
     },
     toggleMetronome() {
       ui((u) => void (u.metronome = !u.metronome));

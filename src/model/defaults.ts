@@ -69,6 +69,8 @@ export function createMixerTrack(index: number): MixerTrack {
     mute: false,
     solo: false,
     effects: [],
+    toMaster: true,
+    sends: [],
   };
 }
 
@@ -108,6 +110,7 @@ export function createEmptyProject(): Project {
     version: 1,
     name: 'Sem título',
     bpm: 130,
+    swing: 0,
     channels,
     patterns: [createPattern('Pattern 1', COLORS[0])],
     playlist: { tracks: createPlaylistTracks(), clips: [] },
@@ -121,7 +124,7 @@ function steps(stepsOn: number[], key: number, velocity = 0.8): Note[] {
 }
 
 function clip(patternId: string, track: number, startBar: number, bars: number): PlaylistClip {
-  return { id: uid('cl'), patternId, track, start: startBar * TICKS_PER_BAR, length: bars * TICKS_PER_BAR };
+  return { id: uid('cl'), kind: 'pattern', patternId, track, start: startBar * TICKS_PER_BAR, length: bars * TICKS_PER_BAR };
 }
 
 /** The demo song loaded on first start, showing every part of the app. */
@@ -183,6 +186,7 @@ export function createDemoProject(): Project {
     version: 1,
     name: 'Demo',
     bpm: 124,
+    swing: 0,
     channels,
     patterns: [beat, bassline, pads, melody],
     playlist: {

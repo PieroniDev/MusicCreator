@@ -1,7 +1,8 @@
 import type { PlayMode, Project } from '../model/types';
 import type { Voice } from '../plugins/types';
 import { AudioGraph } from './graph';
-import { loopedEvents, patternEvents, songEvents } from '../model/events';
+import { audioClipsAt, loopedEvents, patternEvents, songAudioEvents, songEvents, swingDelay } from '../model/events';
+import { automationAt, hasAutomation, instrumentAutomationAt } from '../model/automation';
 import { findPattern, patternLength, songLength } from '../model/pattern';
 import { PPQ, secondsPerTick, TICKS_PER_BAR, wrap } from '../model/time';
 
@@ -126,9 +127,24 @@ export class AudioEngine {
     this.anchorU = 0;
     this.nextU = 0;
     this.playing = true;
+    if (transport.mode === 'song') this.resumeAudioClips(project, this.p0, this.anchorTime);
     this.timer.start();
     this.schedule();
     this.emit();
+  }
+
+  /** Starting in the middle of audio clips: play them from the right point of the sample. */
+  private resumeAudioClips(project: Project, position: number, time: number): void {
+    for (const clip of audioClipsAt(project, position)) {
+      if (!this.graph?.isChannelAudible(clip.channelId)) continue;
+      const elapsed = clip.elapsed * this.spt;
+      this.graph.playClip(clip.channelId, time, clip.sampleOffset + elapsed, (clip.length - clip.elapsed) * this.spt);
+    }
+  }
+
+  /** Length of the timeline being played (pattern or song), in ticks. */
+  get loopTicks(): number {
+    return this.loopLength;
   }
 
   stop(): void {
@@ -136,6 +152,8 @@ export class AudioEngine {
     this.playing = false;
     this.timer.stop();
     this.killAll();
+    // Parameters go back to their knob values.
+    this.graph?.setAutomation(new Map());
     this.emit();
   }
 
@@ -154,6 +172,18 @@ export class AudioEngine {
     if (!this.playing || !this.ctx) return null;
     const u = Math.max(0, this.anchorU + (this.ctx.currentTime - this.anchorTime) / this.spt);
     return wrap(this.p0 + u, this.loopLength);
+  }
+
+  /**
+   * The position the listener hears right now: the output plays a little
+   * behind the context clock, so a note played "on the beat" by ear gets
+   * recorded on the beat.
+   */
+  getHeardPosition(): number | null {
+    const pos = this.getPosition();
+    if (pos === null || !this.ctx) return null;
+    const latency = (this.ctx.outputLatency || 0) + (this.ctx.baseLatency || 0);
+    return wrap(pos - latency / this.spt, this.loopLength);
   }
 
   /** Plays a note now (piano roll clicks, keyboard); release it with `voice.release`. */
@@ -205,17 +235,32 @@ export class AudioEngine {
     const position = this.p0 + this.nextU;
     const timeOf = (offset: number) => this.anchorTime + (this.nextU + offset - this.anchorU) * this.spt;
 
+    const song = transport.mode === 'song';
     const patternId = transport.patternId ?? project.patterns[0]?.id;
-    const source =
-      transport.mode === 'song'
-        ? (from: number, to: number) => songEvents(project, from, to)
-        : (from: number, to: number) => (patternId ? patternEvents(project, patternId, from, to) : []);
+    const source = song
+      ? (from: number, to: number) => songEvents(project, from, to)
+      : (from: number, to: number) => (patternId ? patternEvents(project, patternId, from, to) : []);
+    const automated = song && hasAutomation(project);
 
     for (const ev of loopedEvents(source, this.loopLength, position, span)) {
       if (!this.graph.isChannelAudible(ev.channelId)) continue;
-      const time = Math.max(ctx.currentTime, timeOf(ev.offset));
-      this.graph.playNote(ev.channelId, ev.key, ev.velocity, time, ev.length * this.spt);
+      const time = Math.max(ctx.currentTime, timeOf(ev.offset + swingDelay(ev.start, project.swing)));
+      const params = automated ? instrumentAutomationAt(project, ev.channelId, ev.start) : undefined;
+      this.graph.playNote(ev.channelId, ev.key, ev.velocity, time, ev.length * this.spt, params);
     }
+
+    if (song) {
+      const clips = (from: number, to: number) => songAudioEvents(project, from, to);
+      for (const ev of loopedEvents(clips, this.loopLength, position, span)) {
+        if (!this.graph.isChannelAudible(ev.channelId)) continue;
+        const time = Math.max(ctx.currentTime, timeOf(ev.offset));
+        this.graph.playClip(ev.channelId, time, ev.sampleOffset, ev.length * this.spt);
+      }
+    }
+
+    // Automation follows what is being heard now, not the lookahead window.
+    const heard = this.getPosition();
+    this.graph.setAutomation(automated && heard !== null ? automationAt(project, heard) : new Map());
 
     if (transport.metronome) {
       const beats = (from: number, to: number) => {

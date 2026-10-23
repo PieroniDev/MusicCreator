@@ -8,6 +8,13 @@ import type { SampleAsset } from '../model/types';
 const decoded = new Map<string, AudioBuffer>();
 const pending = new Map<string, Promise<AudioBuffer | undefined>>();
 const failed = new Set<string>();
+const listeners = new Set<() => void>();
+
+/** Calls `listener` whenever a sample finishes decoding; returns an unsubscribe function. */
+export function subscribeSamples(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
 
 export function base64ToBytes(data: string): Uint8Array<ArrayBuffer> {
   const bin = atob(data);
@@ -39,6 +46,7 @@ export function decodeSample(ctx: BaseAudioContext, asset: SampleAsset): Promise
       .decodeAudioData(base64ToBytes(asset.data).buffer)
       .then((buf) => {
         decoded.set(asset.id, buf);
+        for (const l of listeners) l();
         return buf;
       })
       .catch((err) => {

@@ -9,6 +9,7 @@ import { Playlist } from './ui/Playlist';
 import { Mixer } from './ui/Mixer';
 import { PluginWindow } from './ui/PluginEditor';
 import { installKeyboard } from './ui/keyboard';
+import { ContextMenuHost } from './ui/ContextMenu';
 import { useElementSize } from './ui/hooks';
 import { hasSavedLayout } from './state/persist';
 import { resetLayout, setWorkspaceBounds } from './ui/layout';
@@ -100,6 +101,7 @@ export function App() {
           ))}
         </div>
       </div>
+      <ContextMenuHost />
     </div>
   );
 }

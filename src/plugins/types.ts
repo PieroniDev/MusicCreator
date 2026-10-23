@@ -12,6 +12,10 @@ export interface NoteOptions {
   params: ParamValues;
   /** Decoded sample for sample-based instruments. */
   sample?: AudioBuffer;
+  /** Sample-based instruments: seconds into the sample to start from (audio clips). */
+  offset?: number;
+  /** Always stop at the release, even in one-shot mode (audio clips end with the clip). */
+  gated?: boolean;
 }
 
 export interface Voice {

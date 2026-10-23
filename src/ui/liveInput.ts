@@ -23,7 +23,7 @@ const now = () => engine.context?.currentTime ?? 0;
 /** Whether notes played now get written into the pattern. */
 function recordingNow(): boolean {
   const { ui } = useStore.getState();
-  return ui.recording && ui.mode === 'pattern' && engine.isPlaying;
+  return ui.recording && ui.recordMode === 'notes' && ui.mode === 'pattern' && engine.isPlaying;
 }
 
 /**

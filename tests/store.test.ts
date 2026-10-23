@@ -185,3 +185,42 @@ describe('store: clips, routing, swing and saved state', () => {
     expect(isDirty(s())).toBe(true);
   });
 });
+
+describe('store: playlist clip tools and drum pads', () => {
+  it('duplicates a clip right after itself', () => {
+    const pattern = s().project.patterns[0];
+    const id = s().addClip(pattern.id, 2, 384);
+    const copy = s().duplicateClip(id)!;
+    const c = s().project.playlist.clips.find((x) => x.id === copy)!;
+    expect(c).toMatchObject({ track: 2, start: 768 });
+  });
+
+  it('makes a pattern clip unique with its own copy of the pattern', () => {
+    const pattern = s().project.patterns[0];
+    const channel = s().project.channels[0];
+    s().toggleStep(pattern.id, channel.id, 0);
+    const a = s().addClip(pattern.id, 0, 0);
+    const b = s().addClip(pattern.id, 0, 384);
+    s().makeClipUnique(b);
+    const clips = s().project.playlist.clips;
+    const clipA = clips.find((x) => x.id === a)!;
+    const clipB = clips.find((x) => x.id === b)!;
+    if (clipA.kind !== 'pattern' || clipB.kind !== 'pattern') throw new Error('expected pattern clips');
+    expect(clipB.patternId).not.toBe(clipA.patternId);
+    expect(s().project.patterns).toHaveLength(2);
+    expect(s().ui.selectedPatternId).toBe(clipB.patternId);
+    const copy = s().project.patterns.find((p) => p.id === clipB.patternId)!;
+    expect(copy.notes[channel.id]).toHaveLength(1);
+  });
+
+  it('stores pad samples and frees them when replaced or cleared', () => {
+    const id = s().addChannel('pads');
+    expect(s().project.channels.find((c) => c.id === id)!.rootKey).toBe(36);
+    s().setPadSample(id, 3, 'kick.wav', 'AAAA');
+    const sampleId = s().project.channels.find((c) => c.id === id)!.pads![3]!;
+    expect(s().project.samples[sampleId].name).toBe('kick.wav');
+    s().setPadSample(id, 3, '', null);
+    expect(s().project.channels.find((c) => c.id === id)!.pads![3]).toBeNull();
+    expect(s().project.samples[sampleId]).toBeUndefined();
+  });
+});

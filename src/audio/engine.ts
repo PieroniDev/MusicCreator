@@ -108,8 +108,10 @@ export class AudioEngine {
         this.anchorTime = now;
       }
     }
+    const tempoChanged = newSpt !== this.spt;
     this.spt = newSpt;
     this.graph.sync(project);
+    if (this.playing && tempoChanged) this.updateBeatAnchor();
   }
 
   play(): void {
@@ -127,10 +129,18 @@ export class AudioEngine {
     this.anchorU = 0;
     this.nextU = 0;
     this.playing = true;
+    this.updateBeatAnchor();
     if (transport.mode === 'song') this.resumeAudioClips(project, this.p0, this.anchorTime);
     this.timer.start();
     this.schedule();
     this.emit();
+  }
+
+  /** Tells tempo-synced effects when the timeline's tick 0 (a bar start) plays. */
+  private updateBeatAnchor(): void {
+    if (!this.graph) return;
+    const timeAtNext = this.anchorTime + (this.nextU - this.anchorU) * this.spt;
+    this.graph.setBeatAnchor(timeAtNext - wrap(this.p0 + this.nextU, this.loopLength) * this.spt);
   }
 
   /** Starting in the middle of audio clips: play them from the right point of the sample. */
@@ -186,6 +196,12 @@ export class AudioEngine {
     return wrap(pos - latency / this.spt, this.loopLength);
   }
 
+  /** Timeline position (ticks, not wrapped at the loop end) playing at context time `time`. */
+  positionAt(time: number): number | null {
+    if (!this.playing) return null;
+    return this.p0 + this.anchorU + (time - this.anchorTime) / this.spt;
+  }
+
   /** Plays a note now (piano roll clicks, keyboard); release it with `voice.release`. */
   previewNote(channelId: string, key: number, velocity = 0.8): Voice | null {
     const ctx = this.ensureRunning();
@@ -223,10 +239,12 @@ export class AudioEngine {
       this.lastMode = transport.mode;
       this.loopLength = length;
       this.p0 = wrap((transport.mode === 'song' ? transport.songStart : 0) - this.nextU, length);
+      this.updateBeatAnchor();
     } else if (length !== this.loopLength) {
       const position = wrap(this.p0 + this.nextU, this.loopLength);
       this.loopLength = length;
       this.p0 = wrap(position, length) - this.nextU;
+      this.updateBeatAnchor();
     }
 
     const horizonU = this.anchorU + (ctx.currentTime + LOOKAHEAD - this.anchorTime) / this.spt;

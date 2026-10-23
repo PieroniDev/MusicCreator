@@ -4,9 +4,11 @@ import { engine } from '../audio/engine';
 import { formatPosition } from '../model/time';
 import { DragNumber, IconButton } from './controls';
 import { usePlayheadFrame, usePlaying } from './hooks';
-import { newProject, openProject, saveProject } from './fileOps';
+import { confirmDiscard, exportMidi, importMidi, newProject, openProject, saveProject } from './fileOps';
+import { openContextMenu } from './ContextMenu';
 import { runExport, useExportProgress } from './exporter';
 import { enableMidi, useMidi } from '../audio/midi';
+import { useRecorder } from '../audio/recorder';
 
 const WINDOW_BUTTONS: Array<{ id: WindowId; label: string; key: string; name?: string }> = [
   { id: 'playlist', label: 'Playlist', key: 'F5' },
@@ -34,6 +36,8 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
   const mode = useStore((s) => s.ui.mode);
   const metronome = useStore((s) => s.ui.metronome);
   const recording = useStore((s) => s.ui.recording);
+  const recordMode = useStore((s) => s.ui.recordMode);
+  const recorder = useRecorder();
   const midi = useMidi();
   const bpm = useStore((s) => s.project.bpm);
   const name = useStore((s) => s.project.name);
@@ -59,11 +63,25 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
       </div>
 
       <div className="tool-group">
-        <IconButton onClick={newProject} title="Novo projeto">
-          Novo
-        </IconButton>
-        <IconButton onClick={() => void openProject()} title="Abrir projeto (.mcproj)">
-          Abrir
+        <IconButton
+          onClick={(e) =>
+            openContextMenu(
+              { clientX: e.currentTarget.getBoundingClientRect().left, clientY: e.currentTarget.getBoundingClientRect().bottom + 2, preventDefault: () => {} },
+              [
+                { label: 'Novo projeto', action: newProject },
+                { label: 'Abrir projeto…', action: () => void openProject() },
+                { label: 'Salvar', action: () => void saveProject() },
+                { label: 'Salvar como…', action: () => void saveProject(true) },
+                { label: `Exportar WAV (${mode === 'song' ? 'música' : 'pattern'})…`, action: () => void runExport(), disabled: exporting !== null },
+                { label: `Exportar MIDI (${mode === 'song' ? 'música' : 'pattern'})…`, action: () => void exportMidi() },
+                { label: 'Importar MIDI…', action: () => void importMidi() },
+                { label: 'Carregar música demo', action: () => confirmDiscard() && actions().loadDemo() },
+              ],
+            )
+          }
+          title="Arquivo: novo, abrir, salvar, exportar WAV/MIDI, importar MIDI"
+        >
+          Arquivo ▾
         </IconButton>
         <IconButton onClick={() => void saveProject()} title="Salvar projeto (Ctrl+S)">
           Salvar
@@ -96,16 +114,41 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
         </button>
         <button
           type="button"
-          className={`rec-btn${recording ? ' armed' : ''}`}
+          className={`rec-btn${recording ? ' armed' : ''}${recorder.state === 'recording' ? ' live' : ''}`}
           onClick={() => actions().toggleRecording()}
+          onContextMenu={(e) =>
+            openContextMenu(
+              e,
+              [
+                { label: `${recordMode === 'notes' ? '✓ ' : ''}Gravar notas (teclado / MIDI, modo PAT)`, action: () => actions().setRecordMode('notes') },
+                {
+                  label: `${recordMode === 'audio' ? '✓ ' : ''}Gravar áudio (microfone / interface, modo SONG)`,
+                  action: () => {
+                    actions().setRecordMode('audio');
+                    actions().setMode('song');
+                  },
+                },
+              ],
+              'Gravação',
+            )
+          }
           title={
-            recording
-              ? 'Gravação armada: as notas tocadas (teclado ou MIDI) entram no pattern enquanto ele toca (modo PAT)'
-              : 'Armar gravação de notas'
+            recordMode === 'audio'
+              ? recording
+                ? 'Gravação de áudio armada: toque a música (SONG) e a entrada vira um clip de áudio na Playlist'
+                : 'Armar gravação de áudio (botão direito: escolher notas ou áudio)'
+              : recording
+                ? 'Gravação armada: as notas tocadas (teclado ou MIDI) entram no pattern enquanto ele toca (modo PAT)'
+                : 'Armar gravação de notas (botão direito: escolher notas ou áudio)'
           }
         >
-          ●
+          ●<span className="rec-mode">{recordMode === 'audio' ? 'A' : 'N'}</span>
         </button>
+        {recordMode === 'audio' && recording && (
+          <div className="input-meter" title="Nível da entrada de áudio">
+            <div style={{ transform: `scaleX(${Math.min(1, recorder.level)})` }} />
+          </div>
+        )}
         <IconButton active={metronome} onClick={() => actions().toggleMetronome()} title="Metrônomo">
           ♩
         </IconButton>

@@ -1,6 +1,6 @@
 import { actions, isDirty, useStore, type WindowId } from '../state/store';
 import { discardUnsavedAutosave, flushAutosave } from '../state/persist';
-import { newProject, openProject, openProjectPath, saveProject } from '../ui/fileOps';
+import { exportMidi, importMidi, newProject, openProject, openProjectPath, saveProject } from '../ui/fileOps';
 import { runExport } from '../ui/exporter';
 import { resetLayout } from '../ui/layout';
 import { baseName, desktop, type DesktopCommand } from './api';
@@ -14,6 +14,8 @@ async function handleCommand(command: DesktopCommand, arg?: string): Promise<voi
     case 'save': return void (await saveProject(false));
     case 'save-as': return void (await saveProject(true));
     case 'export-wav': return runExport();
+    case 'export-midi': return exportMidi();
+    case 'import-midi': return importMidi();
     case 'undo': return a.undo();
     case 'redo': return a.redo();
     case 'toggle-window': return arg ? a.toggleWindow(arg as WindowId) : undefined;

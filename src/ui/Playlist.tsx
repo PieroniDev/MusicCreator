@@ -154,6 +154,10 @@ export function Playlist() {
         e.preventDefault();
         actions().removeClip(selectedClip);
         setSelectedClip(null);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        const copy = actions().duplicateClip(selectedClip);
+        if (copy) setSelectedClip(copy);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -229,6 +233,11 @@ export function Playlist() {
 
     if (e.button === 2) {
       e.preventDefault();
+      // The clip's name strip opens its menu; the rest of the clip is erased like in other DAWs.
+      if (clip && target.closest('.clip-name')) {
+        openClipMenu(e, clip);
+        return;
+      }
       if (clip?.kind === 'automation' && pointIndex != null) {
         if (clip.points.length > 1) {
           a.beginGesture();
@@ -271,6 +280,37 @@ export function Playlist() {
     setSelectedClip(id);
     const created = useStore.getState().project.playlist.clips.find((c) => c.id === id);
     if (created) dragClip(e, created, 'move');
+  };
+
+  const openClipMenu = (e: React.PointerEvent, clip: PlaylistClip) => {
+    setSelectedClip(clip.id);
+    openContextMenu(
+      e,
+      [
+        {
+          label: 'Duplicar (Ctrl+B)',
+          action: () => {
+            const copy = a.duplicateClip(clip.id);
+            if (copy) setSelectedClip(copy);
+          },
+        },
+        ...(clip.kind === 'pattern'
+          ? [
+              { label: 'Tornar único (cópia do pattern)', action: () => a.makeClipUnique(clip.id) },
+              {
+                label: 'Abrir no Channel Rack',
+                action: () => {
+                  a.selectPattern(clip.patternId);
+                  a.toggleWindow('channelRack', true);
+                },
+              },
+            ]
+          : []),
+        ...(clip.kind === 'audio' ? [{ label: 'Abrir o sampler', action: () => a.openPluginWindow({ kind: 'channel', channelId: clip.channelId }) }] : []),
+        { label: 'Excluir', danger: true, action: () => a.removeClip(clip.id) },
+      ],
+      'Clip',
+    );
   };
 
   const onDrop = (e: React.DragEvent) => {
@@ -370,7 +410,7 @@ export function Playlist() {
           <input type="range" min={0.25} max={4} step={0.05} value={zoom} onChange={(e) => a.setPlaylistView({ zoom: Number(e.target.value) })} />
         </label>
         <span className="hint">
-          Clique: colocar pattern · arrastar: mover · borda: esticar · botão direito: apagar · arraste arquivos de áudio para criar clips de áudio
+          Clique: colocar pattern · arrastar: mover · borda: esticar · botão direito: apagar (no nome do clip: menu) · Ctrl+B: duplicar · arraste áudio para criar clips
         </span>
       </div>
       <div className="pl-body">

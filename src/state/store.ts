@@ -30,6 +30,16 @@ export interface ClipPatch {
   offset?: number;
 }
 
+/** Removes sample assets no channel uses any more. */
+function pruneSamples(d: Draft<Project>): void {
+  const used = new Set<string>();
+  for (const c of d.channels) {
+    if (c.sampleId) used.add(c.sampleId);
+    for (const id of c.pads ?? []) if (id) used.add(id);
+  }
+  for (const id of Object.keys(d.samples)) if (!used.has(id)) delete d.samples[id];
+}
+
 /**
  * Drops clips that point at something deleted: audio clips of removed
  * channels and automation of removed channels, effects or parameters.
@@ -69,10 +79,20 @@ export interface UIState {
   metronome: boolean;
   /** Record armed: notes played live are written into the pattern while it plays. */
   recording: boolean;
+  /** What record captures: notes played live, or audio from an input into the playlist. */
+  recordMode: 'notes' | 'audio';
   windows: Record<WindowId, WindowState>;
   pluginWindows: Array<PluginWindowRef & { x: number; y: number; z: number }>;
   topZ: number;
-  pianoRoll: { snap: number; zoom: number };
+  pianoRoll: {
+    snap: number;
+    zoom: number;
+    /** Scale highlighting: root pitch class 0..11 and index into SCALES (-1: off). */
+    scaleRoot: number;
+    scale: number;
+    /** Chord stamp: index into CHORDS (-1: single notes). */
+    stamp: number;
+  };
   playlist: { snap: number; zoom: number };
 }
 
@@ -141,6 +161,8 @@ export interface AppState {
   setChannelParam(id: string, param: string, value: number): void;
   applyChannelPreset(id: string, presetIndex: number): void;
   setChannelSample(id: string, name: string, data: string): void;
+  /** Drum Pads: puts a sample on a pad (or clears it with null data). */
+  setPadSample(id: string, pad: number, name: string, data: string | null, history?: boolean): void;
 
   addPattern(): void;
   clonePattern(id: string): void;
@@ -152,6 +174,8 @@ export interface AppState {
   addNotes(patternId: string, channelId: string, notes: Note[], history?: boolean): void;
   updateNotes(patternId: string, channelId: string, patches: Record<string, Partial<Omit<Note, 'id'>>>, history?: boolean): void;
   removeNotes(patternId: string, channelId: string, ids: string[], history?: boolean): void;
+  /** Replaces some notes by others in one undo step (piano roll tools). */
+  replaceNotes(patternId: string, channelId: string, removeIds: string[], add: Note[]): void;
   clearNotes(patternId: string, channelId: string): void;
 
   addClip(patternId: string, track: number, start: number, length?: number): string;
@@ -159,6 +183,10 @@ export interface AppState {
   addAutomationClip(target: AutomationTarget): string | null;
   updateClip(id: string, patch: ClipPatch, history?: boolean): void;
   setAutomationPoints(id: string, points: AutomationPoint[]): void;
+  /** Copies a clip right after itself on the same track; returns the copy's id. */
+  duplicateClip(id: string): string | null;
+  /** Gives a pattern clip its own copy of the pattern, so editing it changes only this clip. */
+  makeClipUnique(id: string): void;
   removeClip(id: string, history?: boolean): void;
   updateTrack(index: number, patch: { name?: string; mute?: boolean }): void;
 
@@ -181,6 +209,7 @@ export interface AppState {
   setSongStart(tick: number): void;
   toggleMetronome(): void;
   toggleRecording(): void;
+  setRecordMode(mode: 'notes' | 'audio'): void;
   toggleWindow(id: WindowId, open?: boolean): void;
   focusWindow(id: WindowId): void;
   setWindowRect(id: WindowId, rect: Partial<Pick<WindowState, 'x' | 'y' | 'w' | 'h'>>): void;
@@ -202,10 +231,11 @@ function initialUI(project: Project): UIState {
     songStart: 0,
     metronome: false,
     recording: false,
+    recordMode: 'notes',
     windows: structuredClone(DEFAULT_WINDOWS),
     pluginWindows: [],
     topZ: 10,
-    pianoRoll: { snap: TICKS_PER_STEP, zoom: 1 },
+    pianoRoll: { snap: TICKS_PER_STEP, zoom: 1, scaleRoot: 0, scale: -1, stamp: -1 },
     playlist: { snap: 384, zoom: 1 },
   };
 }
@@ -315,6 +345,7 @@ export const useStore = create<AppState>()((set, get) => {
       const channel = createChannel(instrumentId, preset ?? plugin?.name ?? 'Canal', {
         preset,
         color: colorAt(count),
+        ...(plugin?.defaultRootKey !== undefined ? { rootKey: plugin.defaultRootKey } : {}),
       });
       mutate((d) => {
         // Route new channels to the first insert no other channel uses.
@@ -332,8 +363,7 @@ export const useStore = create<AppState>()((set, get) => {
         d.channels = d.channels.filter((c) => c.id !== id);
         for (const p of d.patterns) delete p.notes[id];
         pruneClips(d);
-        const used = new Set(d.channels.map((c) => c.sampleId).filter(Boolean));
-        for (const sampleId of Object.keys(d.samples)) if (!used.has(sampleId)) delete d.samples[sampleId];
+        pruneSamples(d);
       });
     },
     cloneChannel(id) {
@@ -396,11 +426,10 @@ export const useStore = create<AppState>()((set, get) => {
       mutate((d) => {
         const c = channelOf(d, id);
         if (!c) return;
-        const old = c.sampleId;
         d.samples[sampleId] = { id: sampleId, name, data };
         c.sampleId = sampleId;
-        if (old && !d.channels.some((other) => other.sampleId === old)) delete d.samples[old];
-        if (/^Sampler( \(\d+\))?$/.test(c.name)) {
+        pruneSamples(d);
+        if (/^(Sampler|Slicer)( \(\d+\))?$/.test(c.name)) {
           const label = name.replace(/\.[^.]+$/, '').slice(0, 40) || c.name;
           // The insert was named after the channel when it was added; keep them in step.
           const insert = d.mixer[c.mixerTrack];
@@ -408,6 +437,19 @@ export const useStore = create<AppState>()((set, get) => {
           c.name = label;
         }
       });
+    },
+
+    setPadSample(id, pad, name, data, history = true) {
+      const sampleId = uid('smp');
+      mutate((d) => {
+        const c = channelOf(d, id);
+        if (!c || pad < 0 || pad > 15) return;
+        const pads = c.pads ?? Array.from({ length: 16 }, () => null);
+        if (data) d.samples[sampleId] = { id: sampleId, name, data };
+        pads[pad] = data ? sampleId : null;
+        c.pads = pads;
+        pruneSamples(d);
+      }, history);
     },
 
     addPattern() {
@@ -496,6 +538,15 @@ export const useStore = create<AppState>()((set, get) => {
         if (pattern && list) pattern.notes[channelId] = list.filter((n) => !remove.has(n.id));
       }, history);
     },
+    replaceNotes(patternId, channelId, removeIds, add) {
+      const remove = new Set(removeIds);
+      mutate((d) => {
+        const pattern = d.patterns.find((p) => p.id === patternId);
+        if (!pattern) return;
+        const kept = (pattern.notes[channelId] ?? []).filter((n) => !remove.has(n.id));
+        pattern.notes[channelId] = [...kept, ...add.filter((n) => n.key >= 0 && n.key <= 127 && n.length > 0)].sort((a, b) => a.start - b.start);
+      });
+    },
     clearNotes(patternId, channelId) {
       mutate((d) => {
         const pattern = d.patterns.find((p) => p.id === patternId);
@@ -562,6 +613,27 @@ export const useStore = create<AppState>()((set, get) => {
         // Points past a shortened automation clip's end are clamped onto it.
         if (c.kind === 'automation') for (const p of c.points) p.t = Math.min(p.t, c.length);
       }, history);
+    },
+    duplicateClip(id) {
+      const clip = get().project.playlist.clips.find((c) => c.id === id);
+      if (!clip) return null;
+      const copy: PlaylistClip = { ...structuredClone(clip), id: uid('cl'), start: clip.start + clip.length };
+      mutate((d) => void d.playlist.clips.push(copy));
+      return copy.id;
+    },
+    makeClipUnique(id) {
+      const project = get().project;
+      const clip = project.playlist.clips.find((c) => c.id === id);
+      const source = clip?.kind === 'pattern' ? findPattern(project, clip.patternId) : undefined;
+      if (!clip || !source) return;
+      const copy = { ...structuredClone(source), id: uid('pt'), name: `${source.name} (${project.patterns.length + 1})` };
+      for (const notes of Object.values(copy.notes)) for (const n of notes) n.id = uid('n');
+      mutate((d) => {
+        d.patterns.splice(d.patterns.findIndex((p) => p.id === source.id) + 1, 0, copy);
+        const c = d.playlist.clips.find((x) => x.id === id);
+        if (c?.kind === 'pattern') c.patternId = copy.id;
+      });
+      ui((u) => void (u.selectedPatternId = copy.id));
     },
     setAutomationPoints(id, points) {
       mutate((d) => {
@@ -695,6 +767,9 @@ export const useStore = create<AppState>()((set, get) => {
     },
     toggleRecording() {
       ui((u) => void (u.recording = !u.recording));
+    },
+    setRecordMode(mode) {
+      ui((u) => void (u.recordMode = mode));
     },
     toggleMetronome() {
       ui((u) => void (u.metronome = !u.metronome));

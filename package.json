@@ -79,6 +79,10 @@
       "languages": [
         "pt-BR",
         "en-US"
+      ],
+      "capabilities": [
+        "runFullTrust",
+        "microphone"
       ]
     },
     "mac": {
@@ -86,7 +90,10 @@
         "dmg"
       ],
       "category": "public.app-category.music",
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "O MusicCreator usa o microfone ou a interface de áudio para gravar na Playlist."
+      }
     },
     "linux": {
       "target": [

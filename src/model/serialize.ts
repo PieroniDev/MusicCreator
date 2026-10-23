@@ -59,6 +59,7 @@ function parseChannel(v: unknown, i: number, mixerSize: number): Channel | null 
     mixerTrack: Math.round(num(v.mixerTrack, 0, 0, mixerSize - 1)),
     rootKey: Math.round(num(v.rootKey, 60, 0, 127)),
     sampleId: typeof v.sampleId === 'string' ? v.sampleId : undefined,
+    pads: Array.isArray(v.pads) ? v.pads.slice(0, 16).map((x) => (typeof x === 'string' ? x : null)) : undefined,
   };
 }
 
@@ -235,7 +236,11 @@ export function parseProject(input: unknown): Project {
       if (isObj(s) && typeof s.data === 'string') samples[id] = { id, name: str(s.name, 'sample'), data: s.data };
     }
   }
-  for (const c of channels) if (c.sampleId && !samples[c.sampleId]) c.sampleId = undefined;
+  for (const c of channels) {
+    if (c.sampleId && !samples[c.sampleId]) c.sampleId = undefined;
+    if (c.pads) c.pads = c.pads.map((id) => (id && samples[id] ? id : null));
+    else delete c.pads;
+  }
 
   const project: Project = {
     version: 1,

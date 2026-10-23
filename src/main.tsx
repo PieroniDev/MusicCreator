@@ -5,10 +5,12 @@ import { engine } from './audio/engine';
 import { useStore } from './state/store';
 import { flushAutosave, setupPersistence } from './state/persist';
 import { installDocumentIntegration } from './desktop/integration';
+import { installRecorder } from './audio/recorder';
 import './styles.css';
 
 setupPersistence();
 installDocumentIntegration();
+installRecorder();
 window.addEventListener('beforeunload', flushAutosave);
 
 engine.attach({

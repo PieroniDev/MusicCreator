@@ -57,6 +57,8 @@ export class AudioGraph {
   private readonly mixer: MixerStrip[] = [];
   private readonly voices = new Set<Voice>();
   private automation = new Map<string, AutomatedValue>();
+  /** Context time of a beat on the song grid, for tempo-synced effects (null when stopped). */
+  private beatAnchor: number | null = null;
   private bpm = 120;
   private project?: Project;
 
@@ -99,6 +101,7 @@ export class AudioGraph {
       rootKey: channel.rootKey,
       params: params ? { ...channel.params, ...params } : channel.params,
       sample: getDecodedSample(channel.sampleId),
+      pads: channel.pads?.map((id) => getDecodedSample(id ?? undefined)),
     });
     this.track(voice);
     if (duration !== undefined) voice.release(time + duration);
@@ -151,6 +154,12 @@ export class AudioGraph {
     for (const [key, entry] of previous) {
       if (!values.has(key)) this.applyTarget(entry.target);
     }
+  }
+
+  /** Lines tempo-synced effects (gates, pumps) up with the song's beats. */
+  setBeatAnchor(beatTime: number): void {
+    this.beatAnchor = beatTime;
+    for (const strip of this.mixer) for (const fx of strip.effects.values()) fx.instance.syncBeat?.(beatTime);
   }
 
   /** Peak level (0..) of a mixer track's left and right channels since the last call. */
@@ -314,6 +323,7 @@ export class AudioGraph {
       if (!plugin) continue;
       if (!entry) {
         entry = { slot, instance: plugin.create(this.ctx, slot.params, { bpm: this.bpm }) };
+        if (this.beatAnchor !== null) entry.instance.syncBeat?.(this.beatAnchor);
         strip.effects.set(slot.id, entry);
         // A new instance invalidates the chain wiring.
         strip.chainKey = '';

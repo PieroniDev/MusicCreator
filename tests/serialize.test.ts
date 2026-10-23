@@ -119,3 +119,14 @@ describe('project files with clips, routing and swing', () => {
     expect(parsed.playlist.clips.some((c) => c.kind === 'audio')).toBe(false);
   });
 });
+
+describe('drum pads in project files', () => {
+  it('keeps pad samples and empties pads whose sample is missing', () => {
+    const demo = createDemoProject();
+    demo.samples.s1 = { id: 's1', name: 'kick.wav', data: 'AAAA' };
+    demo.channels[0].pads = ['s1', 'gone', ...Array.from({ length: 14 }, () => null)];
+    const parsed = parseProject(JSON.parse(serializeProject(demo)));
+    expect(parsed.channels[0].pads?.slice(0, 3)).toEqual(['s1', null, null]);
+    expect(parsed.channels[1].pads).toBeUndefined();
+  });
+});

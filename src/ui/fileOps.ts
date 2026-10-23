@@ -5,6 +5,10 @@ import { bytesToBase64 } from '../audio/samples';
 import { actions, isDirty, useStore } from '../state/store';
 import { engine } from '../audio/engine';
 import { baseName, desktop } from '../desktop/api';
+import { readMidi, writeMidi, type MidiSong, type MidiTrack } from '../model/midiFile';
+import { patternEvents, songEvents } from '../model/events';
+import { patternLength, songLength } from '../model/pattern';
+import { createNote } from '../model/defaults';
 
 function safeName(name: string): string {
   return name.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'projeto';
@@ -116,7 +120,7 @@ export async function exportWav(onProgress: (fraction: number) => void): Promise
   const suffix = ui.mode === 'pattern' ? ` - ${project.patterns.find((p) => p.id === ui.selectedPatternId)?.name ?? 'pattern'}` : '';
   const name = `${safeName(project.name + suffix)}.wav`;
   const wav = encodeWav(buffer);
-  if (desktop) await desktop.exportAudio(name, new Uint8Array(wav));
+  if (desktop) await desktop.exportFile(name, new Uint8Array(wav), 'wav');
   else downloadBlob(new Blob([wav], { type: 'audio/wav' }), name);
 }
 
@@ -164,4 +168,115 @@ export async function loadSampleFile(channelId: string, file?: File | null): Pro
 
 export function isAudioFile(file: File): boolean {
   return file.type.startsWith('audio/') || /\.(wav|mp3|ogg|flac|aiff?|m4a|opus|webm)$/i.test(file.name);
+}
+
+/** General MIDI drum keys → Drum Synth preset, for importing drum tracks. */
+const GM_DRUMS: Array<[number[], string]> = [
+  [[35, 36], 'Kick'],
+  [[38, 40], 'Snare'],
+  [[39], 'Clap'],
+  [[42, 44], 'Hat fechado'],
+  [[46], 'Hat aberto'],
+  [[41, 43, 45, 47, 48, 50], 'Tom'],
+  [[37], 'Rim'],
+  [[56], 'Cowbell'],
+  [[49, 51, 52, 55, 57, 59], 'Prato'],
+];
+
+/** General MIDI key of each Drum Synth voice (same order as DRUM_VOICES). */
+const GM_KEY_BY_VOICE = [36, 38, 39, 42, 46, 45, 37, 56, 49];
+
+/** Exports the notes of the pattern (PAT mode) or the whole song (SONG mode) as a .mid file. */
+export async function exportMidi(): Promise<void> {
+  const { project, ui } = useStore.getState();
+  const song = ui.mode === 'song';
+  const pattern = project.patterns.find((p) => p.id === ui.selectedPatternId) ?? project.patterns[0];
+  const events = song ? songEvents(project, 0, songLength(project)) : patternEvents(project, pattern.id, 0, patternLength(pattern));
+  let nextChannel = 0;
+  const tracks: MidiTrack[] = [];
+  for (const channel of project.channels) {
+    const notes = events.filter((e) => e.channelId === channel.id);
+    if (!notes.length) continue;
+    const drums = channel.instrument === 'drums' || channel.instrument === 'pads';
+    // Drums go to MIDI channel 10 (index 9), like General MIDI drums.
+    const midiChannel = drums ? 9 : nextChannel === 9 ? ++nextChannel : nextChannel;
+    if (!drums) nextChannel = (midiChannel + 1) % 16;
+    // A Drum Synth channel plays one drum: write it on that drum's General MIDI key.
+    const gmKey = channel.instrument === 'drums' ? GM_KEY_BY_VOICE[Math.round(channel.params.voice ?? 0)] : undefined;
+    tracks.push({
+      name: channel.name,
+      channel: midiChannel,
+      notes: notes.map(({ key, start, length, velocity }) => ({ key: gmKey ?? key, start, length, velocity })),
+    });
+  }
+  if (!tracks.length) {
+    alert(song ? 'A música não tem notas para exportar.' : 'Este pattern não tem notas para exportar.');
+    return;
+  }
+  const data = writeMidi({ bpm: project.bpm, tracks });
+  const name = `${safeName(song ? project.name : `${project.name} - ${pattern.name}`)}.mid`;
+  if (desktop) await desktop.exportFile(name, data, 'mid');
+  else downloadBlob(new Blob([data], { type: 'audio/midi' }), name);
+}
+
+/**
+ * Imports a .mid file into the selected pattern: one new channel per track
+ * (drum tracks are split into Drum Synth channels per drum), as one undo step.
+ */
+export async function importMidi(): Promise<void> {
+  let bytes: Uint8Array | null = null;
+  if (desktop) bytes = (await desktop.openMidiDialog())?.data ?? null;
+  else {
+    const file = await pickFile('.mid,.midi,audio/midi');
+    if (file) bytes = new Uint8Array(await file.arrayBuffer());
+  }
+  if (!bytes) return;
+  let song: MidiSong;
+  try {
+    song = readMidi(bytes);
+  } catch (err) {
+    showError(err, 'Não foi possível ler o arquivo MIDI.');
+    return;
+  }
+  const tracks = song.tracks.filter((t) => t.notes.length);
+  if (!tracks.length) {
+    alert('O arquivo MIDI não tem notas.');
+    return;
+  }
+  const a = actions();
+  const { project, ui } = useStore.getState();
+  const patternId = ui.selectedPatternId;
+  a.beginGesture();
+  for (const track of tracks) {
+    if (track.channel === 9) {
+      for (const [keys, preset] of GM_DRUMS) {
+        const hits = track.notes.filter((n) => keys.includes(n.key));
+        if (!hits.length) continue;
+        const id = a.addChannel('drums', preset);
+        // Drum Synth plays its sound at the channel's root key.
+        a.addNotes(patternId, id, hits.map((n) => createNote(60, n.start, n.length, n.velocity)));
+      }
+      continue;
+    }
+    const id = a.addChannel('trio', 'Pluck');
+    a.updateChannel(id, { name: track.name });
+    a.addNotes(patternId, id, track.notes.map((n) => createNote(n.key, n.start, n.length, n.velocity)));
+  }
+  a.endGesture();
+  if (song.bpm && Math.abs(song.bpm - project.bpm) > 0.01 && confirm(`Usar o andamento do arquivo MIDI (${song.bpm} BPM)?`)) {
+    a.setBpm(song.bpm);
+  }
+  a.toggleWindow('channelRack', true);
+}
+
+/** Puts audio on a Drum Pads pad (from bytes, or a file picked by the user). */
+export async function loadPadSample(channelId: string, pad: number, audio?: { name: string; bytes: Uint8Array }): Promise<void> {
+  let source = audio;
+  if (!source) {
+    const f = await pickFile(AUDIO_ACCEPT);
+    if (!f) return;
+    source = { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) };
+  }
+  const checked = await validateAudio(source.name, source.bytes);
+  if (checked) actions().setPadSample(channelId, pad, source.name, checked.data);
 }

@@ -39,6 +39,8 @@ export interface Channel {
   rootKey: number;
   /** Sample asset used by sample-based instruments. */
   sampleId?: string;
+  /** Drum Pads: one sample asset per pad (null = empty pad). */
+  pads?: Array<string | null>;
 }
 
 export interface Pattern {

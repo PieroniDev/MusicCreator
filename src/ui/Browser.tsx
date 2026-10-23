@@ -3,6 +3,7 @@ import { actions, useStore } from '../state/store';
 import { EFFECTS, INSTRUMENTS } from '../plugins/registry';
 import { confirmDiscard } from './fileOps';
 import { SampleBrowser } from './SampleBrowser';
+import { addInstrumentChannel } from './padKit';
 
 const SHORTCUTS: Array<[string, string]> = [
   ['Espaço', 'Tocar / parar'],
@@ -47,13 +48,13 @@ export function Browser() {
                 <button type="button" className="browser-expand" onClick={() => setExpanded(expanded === inst.id ? null : inst.id)} title="Presets">
                   {expanded === inst.id ? '−' : '+'}
                 </button>
-                <button type="button" className="browser-name" onClick={() => a.addChannel(inst.id)} title={`${inst.description}\nClique para adicionar ao Channel Rack`}>
+                <button type="button" className="browser-name" onClick={() => addInstrumentChannel(inst.id)} title={`${inst.description}\nClique para adicionar ao Channel Rack`}>
                   {inst.name}
                 </button>
               </div>
               {expanded === inst.id &&
                 inst.presets.map((p) => (
-                  <button type="button" key={p.name} className="browser-preset" onClick={() => a.addChannel(inst.id, p.name)} title="Adicionar canal com este preset">
+                  <button type="button" key={p.name} className="browser-preset" onClick={() => addInstrumentChannel(inst.id, p.name)} title="Adicionar canal com este preset">
                     {p.name}
                   </button>
                 ))}

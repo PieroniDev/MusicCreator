@@ -9,6 +9,11 @@ import type { Voice } from '../plugins/types';
 import { startDrag } from './controls';
 import { usePlayheadFrame } from './hooks';
 import { getActiveScope, isTyping, setActiveScope } from './focus';
+import { openContextMenu } from './ContextMenu';
+import { arpeggiate, chop, chordsFrom, CHORDS, fitToScale, flip, humanize, inScale, legato, quantize, SCALES, strum } from '../model/noteTools';
+import { wrap } from '../model/time';
+
+const PITCH_CLASSES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
 const ROW_H = 14;
 const KEYS_W = 64;
@@ -33,12 +38,16 @@ export const SNAP_OPTIONS: Array<{ label: string; ticks: number }> = [
 
 const keyY = (key: number) => (KEY_COUNT - 1 - key) * ROW_H;
 
-const RowBackground = memo(function RowBackground({ width }: { width: number }) {
+/** Key rows; with a scale chosen, keys outside it are shaded and the root is marked. */
+const RowBackground = memo(function RowBackground({ width, scaleRoot, scale }: { width: number; scaleRoot: number; scale: number }) {
+  const steps = SCALES[scale]?.steps;
   return (
     <div className="pr-rows" style={{ width }}>
       {Array.from({ length: KEY_COUNT }, (_, i) => {
         const key = KEY_COUNT - 1 - i;
-        return <div key={key} className={`pr-row${isBlackKey(key) ? ' black' : ''}${key % 12 === 0 ? ' c' : ''}`} style={{ height: ROW_H }} />;
+        let cls = `pr-row${isBlackKey(key) ? ' black' : ''}${key % 12 === 0 ? ' c' : ''}`;
+        if (steps) cls += inScale(key, scaleRoot, steps) ? (wrap(key - scaleRoot, 12) === 0 ? ' scale-root' : ' in-scale') : ' off-scale';
+        return <div key={key} className={cls} style={{ height: ROW_H }} />;
       })}
     </div>
   );
@@ -84,14 +93,28 @@ export function PianoRoll() {
   const pattern = useStore(selectedPattern);
   const channel = useStore(selectedChannel);
   const channels = useStore((s) => s.project.channels);
-  const { snap, zoom } = useStore((s) => s.ui.pianoRoll);
+  const { snap, zoom, scaleRoot, scale, stamp } = useStore((s) => s.ui.pianoRoll);
   const mode = useStore((s) => s.ui.mode);
   const a = actions();
 
   if (!channel) {
     return <div className="empty-hint">Selecione um canal no Channel Rack para editar suas notas.</div>;
   }
-  return <PianoRollEditor key={channel.id} pattern={pattern} channel={channel} channels={channels} snap={snap} zoom={zoom} mode={mode} a={a} />;
+  return (
+    <PianoRollEditor
+      key={channel.id}
+      pattern={pattern}
+      channel={channel}
+      channels={channels}
+      snap={snap}
+      zoom={zoom}
+      scaleRoot={scaleRoot}
+      scale={scale}
+      stamp={stamp}
+      mode={mode}
+      a={a}
+    />
+  );
 }
 
 interface EditorProps {
@@ -100,11 +123,14 @@ interface EditorProps {
   channels: Channel[];
   snap: number;
   zoom: number;
+  scaleRoot: number;
+  scale: number;
+  stamp: number;
   mode: string;
   a: ReturnType<typeof actions>;
 }
 
-function PianoRollEditor({ pattern, channel, channels, snap, zoom, mode, a }: EditorProps) {
+function PianoRollEditor({ pattern, channel, channels, snap, zoom, scaleRoot, scale, stamp, mode, a }: EditorProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const velRef = useRef<HTMLDivElement>(null);
@@ -345,9 +371,49 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, mode, a }: Ed
 
     setSelection(new Set());
     const created = createNote(p.key, snapFloor(p.tick, snapTicks), lastLength.current, 0.78);
+    // With a chord stamp, one click places the whole chord.
+    const placed = CHORDS[stamp] ? chordsFrom([created], CHORDS[stamp].intervals) : [created];
     a.beginGesture();
-    a.addNotes(pattern.id, channel.id, [created]);
-    moveNotes(e, [created], created);
+    a.addNotes(pattern.id, channel.id, placed);
+    moveNotes(e, placed, created);
+  };
+
+  /** Runs a note tool on the selection (or on every note when nothing is selected). */
+  const applyTool = (tool: (targets: Note[]) => Note[]) => {
+    const targets = selection.size ? notes.filter((n) => selection.has(n.id)) : notes;
+    if (!targets.length) return;
+    const result = tool(targets);
+    a.replaceNotes(pattern.id, channel.id, targets.map((n) => n.id), result);
+    if (selection.size) setSelection(new Set(result.map((n) => n.id)));
+  };
+
+  const openTools = (e: React.MouseEvent) => {
+    const steps = SCALES[scale]?.steps;
+    const where = selection.size ? `${selection.size} nota(s) selecionada(s)` : 'todas as notas';
+    openContextMenu(
+      e,
+      [
+        { label: 'Quantizar início', action: () => applyTool((t) => quantize(t, snapTicks)) },
+        { label: 'Quantizar início e duração', action: () => applyTool((t) => quantize(t, snapTicks, 1, true)) },
+        { label: 'Quantizar 50%', action: () => applyTool((t) => quantize(t, snapTicks, 0.5)) },
+        { label: 'Legato', action: () => applyTool(legato) },
+        { label: 'Arpejar ↑ (na grade)', action: () => applyTool((t) => arpeggiate(t, snapTicks, 'up')) },
+        { label: 'Arpejar ↓ (na grade)', action: () => applyTool((t) => arpeggiate(t, snapTicks, 'down')) },
+        { label: 'Arpejar ↑↓ (na grade)', action: () => applyTool((t) => arpeggiate(t, snapTicks, 'updown')) },
+        { label: 'Strum (dedilhar)', action: () => applyTool((t) => strum(t, 6)) },
+        { label: 'Picotar na grade', action: () => applyTool((t) => chop(t, snapTicks)) },
+        { label: 'Humanizar', action: () => applyTool((t) => humanize(t, 4, 0.12)) },
+        { label: 'Inverter (de cabeça para baixo)', action: () => applyTool(flip) },
+        { label: 'Transformar em acorde maior', action: () => applyTool((t) => chordsFrom(t, CHORDS[0].intervals)) },
+        { label: 'Transformar em acorde menor', action: () => applyTool((t) => chordsFrom(t, CHORDS[1].intervals)) },
+        {
+          label: steps ? `Encaixar na escala (${PITCH_CLASSES[scaleRoot]} ${SCALES[scale].name})` : 'Encaixar na escala (escolha uma escala)',
+          disabled: !steps,
+          action: () => steps && applyTool((t) => fitToScale(t, scaleRoot, steps)),
+        },
+      ],
+      `Ferramentas · ${where}`,
+    );
   };
 
   const onVelocityPointerDown = (e: React.PointerEvent) => {
@@ -397,6 +463,32 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, mode, a }: Ed
           Zoom
           <input type="range" min={0.25} max={4} step={0.05} value={zoom} onChange={(e) => a.setPianoRollView({ zoom: Number(e.target.value) })} />
         </label>
+        <button type="button" className="text-btn" onClick={openTools} title="Quantizar, legato, arpejador, strum, humanizar…">
+          Ferramentas ▾
+        </button>
+        <label className="inline-field" title="Carimbo de acorde: cada clique cria o acorde inteiro">
+          Acorde
+          <select value={stamp} onChange={(e) => a.setPianoRollView({ stamp: Number(e.target.value) })}>
+            <option value={-1}>Nota única</option>
+            {CHORDS.map((c, i) => (
+              <option key={c.name} value={i}>{c.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="inline-field" title="Destaca as notas da escala no piano roll">
+          Escala
+          <select value={scaleRoot} onChange={(e) => a.setPianoRollView({ scaleRoot: Number(e.target.value) })} disabled={scale < 0}>
+            {PITCH_CLASSES.map((name, i) => (
+              <option key={name} value={i}>{name}</option>
+            ))}
+          </select>
+          <select value={scale} onChange={(e) => a.setPianoRollView({ scale: Number(e.target.value) })}>
+            <option value={-1}>Nenhuma</option>
+            {SCALES.map((sc, i) => (
+              <option key={sc.name} value={i}>{sc.name}</option>
+            ))}
+          </select>
+        </label>
         <span className="hint">
           Clique: criar/mover · borda: duração · botão direito: apagar · Ctrl+arrastar: selecionar · Shift+clique: (des)selecionar · Del · Ctrl+A/C/V/B · ↑↓ transpor · Alt: sem grade
         </span>
@@ -420,7 +512,7 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, mode, a }: Ed
           </div>
           <Keyboard channelId={channel.id} />
           <div className="pr-grid" ref={gridRef} style={gridStyle} onPointerDown={onGridPointerDown} onContextMenu={(e) => e.preventDefault()}>
-            <RowBackground width={width} />
+            <RowBackground width={width} scaleRoot={scaleRoot} scale={scale} />
             <div className="pr-outside" style={{ left: length * ppt }} />
             {ghosts.map((n) => (
               <div

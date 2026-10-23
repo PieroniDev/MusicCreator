@@ -122,8 +122,9 @@ programa. Aperte **Espaço** para tocar.
 - **Step sequencer** com 16 passos por compasso e patterns de vários compassos. A roda do
   mouse sobre um passo ajusta a velocity.
 - **Swing** global no cabeçalho.
-- Menu do canal (botão direito no nome): piano roll, renomear, clonar, mover, limpar
-  notas, excluir e carregar sample.
+- Menu do canal (botão direito no nome): piano roll, renomear, clonar, mover, excluir,
+  carregar sample e ferramentas de passos (**preencher a cada 2/4/8 passos**,
+  **deslocar** para os lados, **aleatorizar**, **inverter**, limpar).
 
 ### Piano Roll (F7)
 - Criar, mover e redimensionar notas, com grade configurável (Alt: sem grade).
@@ -131,13 +132,25 @@ programa. Aperte **Espaço** para tocar.
 - Seleção por retângulo (Ctrl+arrastar) e Shift+clique; Del, Ctrl+A/C/V, Ctrl+B
   (duplicar) e setas para transpor.
 - Faixa de **velocity**, notas fantasma dos outros canais e teclado clicável.
+- Menu **Ferramentas**, aplicado à seleção ou a todas as notas: quantizar (início,
+  início+duração, 50%), legato, **arpejador** (↑, ↓, ↑↓ na grade), strum, picotar,
+  humanizar, inverter, transformar em acorde e encaixar na escala.
+- **Carimbo de acorde**: cada clique cria o acorde inteiro (maior, menor, 7, maj7, m7, 9,
+  sus, diminuto, aumentado, power chord…).
+- **Destaque de escala**: escolha tônica e escala (maior, menores, pentatônicas, blues,
+  modos) e as teclas fora dela ficam escurecidas.
 
-### Gravação e MIDI
+### Gravação, MIDI e arquivos MIDI
 - **Teclado MIDI**: botão **MIDI** na barra. Todos os teclados conectados tocam o canal
   selecionado, com velocity e pedal de sustain.
 - **Teclado do computador** como piano: `Z S X D C V G B H N J M` e `Q 2 W 3 E R 5 T 6 Y 7 U`.
 - **Gravar notas**: arme o botão **●**, toque o pattern (modo PAT) e toque no teclado ou
   no MIDI. As notas entram no pattern, alinhadas à grade do piano roll.
+- **Gravar áudio** (microfone ou interface): botão direito no **●** → "Gravar áudio",
+  arme e toque a música (modo SONG). Cada take vira um canal Sampler e um clip de áudio na
+  Playlist, em qualidade total (PCM, sem compressão).
+- **Exportar e importar MIDI** (`.mid`) no menu **Arquivo**. Faixas de bateria General
+  MIDI viram canais de Drum Synth separados (kick, snare, hats…).
 
 ### Playlist (F5)
 - **Clips de pattern**: clique para "pintar" e arraste para mover. Esticar a borda repete
@@ -150,6 +163,8 @@ programa. Aperte **Espaço** para tocar.
   volume/pan dos canais, qualquer parâmetro de instrumento, volume/pan do mixer e
   qualquer parâmetro de efeito.
 - Faixas com mudo e nome, grade, zoom e régua para escolher onde a música começa.
+- **Ctrl+B** duplica o clip selecionado. O botão direito no nome do clip abre o menu
+  (duplicar, **tornar único** — o clip ganha a própria cópia do pattern —, abrir, excluir).
 
 ### Mixer (F9)
 - Master + 16 inserts, com fader, pan, mudo, solo e medidores de pico estéreo.
@@ -164,11 +179,16 @@ programa. Aperte **Espaço** para tocar.
 | **Trio Synth** | Subtrativo de 3 osciladores, unísono de até 7 vozes, filtro ressonante com envelope e ADSR. |
 | **FM Synth** | FM de 2 operadores: pianos elétricos, sinos, baixos e metais. |
 | **Drum Synth** | Bateria sintetizada: kick, snare, clap, hats, tom, rim, cowbell e prato. |
+| **Drum Pads** | 16 pads com um sample cada (teclas C3 a D#4), já vem com um kit sintetizado; arraste seus samples nos pads. |
 | **Sampler** | Qualquer arquivo de áudio: afinação pela nota, one-shot ou loop, reverso, filtro e ADSR. |
+| **Slicer** | Fatia um loop pelos ataques ou em partes iguais, uma fatia por tecla; "Gerar notas das fatias" recria o loop no Piano Roll. |
 
 ### Efeitos nativos
-Parametric EQ, Compressor, Limiter, Delay (sincronizado ao BPM, ping-pong), Reverb,
-Distortion, Filter (com LFO) e Chorus/Flanger, todos com presets.
+Parametric EQ, Compressor, **Multiband Compressor** (3 bandas), Limiter, Delay
+(sincronizado ao BPM, ping-pong), Reverb, Distortion, Filter (com LFO), Chorus/Flanger,
+**Phaser**, **Stereo Enhancer** (largura mid/side e Haas), **Trance Gate** e **Sidechain
+Pump**. Os dois últimos ficam sincronizados às batidas da música, também na exportação.
+Todos têm presets.
 
 ### Projeto
 - Desfazer/refazer em tudo (Ctrl+Z / Ctrl+Y) e autosave.
@@ -208,11 +228,11 @@ Este é um projeto em fases. As maiores lacunas, em ordem de impacto:
    VST3 e saída ASIO/WASAPI de baixa latência. A interface atual continuaria, conversando
    com esse motor. O SDK do VST3 é MIT desde a versão 3.8; o JUCE facilitaria, mas tem
    licença AGPL ou comercial, uma escolha a fazer antes de começar.
-2. **Gravar áudio** (microfone ou interface) direto na playlist.
-3. **Time-stretch e pitch-shift** de clips de áudio (seguir o BPM), e um editor de áudio.
+2. **Time-stretch e pitch-shift** de clips de áudio (seguir o BPM), e um editor de áudio.
+3. Escolher a entrada de áudio, monitorar a entrada e gravar em loop (takes).
 4. Automação de **tempo**, sidechain e compensação de latência de plugins.
 5. Mais instrumentos e efeitos: wavetable, granular, vocoder, multibanda, gate e
    transient shaper.
-6. Ferramentas do piano roll (acordes, arpejador, quantizar, humanizar), editor de
-   parâmetros por passo, import/export de MIDI e importação de `.flp` pela documentação
-   pública do formato (por exemplo, o projeto PyFLP).
+6. Editor de parâmetros por passo (pitch/pan por passo), fórmulas de compasso além de
+   4/4, marcadores na playlist e importação de `.flp` pela documentação pública do
+   formato (por exemplo, o projeto PyFLP).

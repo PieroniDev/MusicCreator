@@ -35,6 +35,8 @@ export async function renderProject(project: Project, options: RenderOptions): P
   const graph = new AudioGraph(ctx);
   await graph.loadSamples(project);
   graph.sync(project);
+  // The render starts on a bar, at time 0.
+  graph.setBeatAnchor(0);
 
   let nextNote = 0;
   let nextClip = 0;

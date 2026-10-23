@@ -9,6 +9,11 @@ const PROJECT_EXTENSIONS = ['.mcproj', '.json'];
 const MAX_PROJECT_BYTES = 512 * 1024 * 1024;
 const MAX_AUDIO_BYTES = 300 * 1024 * 1024;
 const MAX_RECENT = 10;
+const MAX_MIDI_BYTES = 16 * 1024 * 1024;
+const EXPORT_FORMATS = {
+  wav: { ext: 'wav', label: 'WAV', title: 'Exportar áudio' },
+  mid: { ext: 'mid', label: 'MIDI', title: 'Exportar MIDI' },
+} as const;
 
 interface StoredSettings extends DesktopSettings {
   bounds?: { x: number; y: number; width: number; height: number; maximized: boolean };
@@ -112,6 +117,8 @@ function buildMenu(): void {
         item('Salvar como…', 'save-as', 'CmdOrCtrl+Shift+S'),
         { type: 'separator' },
         item('Exportar WAV…', 'export-wav', 'CmdOrCtrl+R'),
+        item('Exportar MIDI…', 'export-midi'),
+        item('Importar MIDI…', 'import-midi'),
         { type: 'separator' },
         isMac ? { role: 'close', label: 'Fechar janela' } : { role: 'quit', label: 'Sair' },
       ],
@@ -205,18 +212,30 @@ function registerIpc(): void {
     addRecent(file);
   });
 
-  ipcMain.handle('export:save', async (_e, suggested: unknown, data: unknown) => {
+  ipcMain.handle('export:save', async (_e, suggested: unknown, data: unknown, kind: unknown) => {
     if (!(data instanceof Uint8Array)) throw new Error('Dados inválidos.');
-    const name = typeof suggested === 'string' && suggested ? suggested : 'export.wav';
+    const format = EXPORT_FORMATS[kind === 'mid' ? 'mid' : 'wav'];
+    const name = typeof suggested === 'string' && suggested ? suggested : `export.${format.ext}`;
     const result = await dialog.showSaveDialog(win!, {
-      title: 'Exportar áudio',
+      title: format.title,
       defaultPath: path.join(doc.path ? path.dirname(doc.path) : app.getPath('music'), name),
-      filters: [{ name: 'WAV', extensions: ['wav'] }],
+      filters: [{ name: format.label, extensions: [format.ext] }],
     });
     if (result.canceled || !result.filePath) return null;
-    const file = hasExtension(result.filePath, ['.wav']) ? result.filePath : `${result.filePath}.wav`;
+    const file = hasExtension(result.filePath, [`.${format.ext}`]) ? result.filePath : `${result.filePath}.${format.ext}`;
     await writeAtomic(file, data);
     return file;
+  });
+
+  ipcMain.handle('midi:open-dialog', async () => {
+    const result = await dialog.showOpenDialog(win!, {
+      title: 'Importar MIDI',
+      properties: ['openFile'],
+      filters: [{ name: 'MIDI', extensions: ['mid', 'midi'] }],
+    });
+    const file = result.canceled ? undefined : result.filePaths[0];
+    if (!file) return null;
+    return { name: path.basename(file), data: new Uint8Array(await readLimited(file, MAX_MIDI_BYTES)) };
   });
 
   ipcMain.handle('fs:pick-folder', async () => {

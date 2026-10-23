@@ -8,6 +8,9 @@ import { Knob, Led } from './controls';
 import { usePlayheadFrame } from './hooks';
 import { addSamplerChannel, loadSampleBytes, loadSampleFile } from './fileOps';
 import { isAudioDrag, readDroppedAudio } from './dnd';
+import { openContextMenu } from './ContextMenu';
+import { addInstrumentChannel } from './padKit';
+import { fillEvery, invertSteps, randomSteps, shiftNotes } from '../model/stepTools';
 
 const VOLUME_SPEC = { min: 0, max: 1.25, default: 0.78, unit: '%', name: 'Volume' };
 const PAN_SPEC = { min: -1, max: 1, default: 0, name: 'Pan' };
@@ -40,7 +43,6 @@ interface RowProps {
 const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected, mixerSize }: RowProps) {
   const notes = pattern.notes[channel.id];
   const stepMode = isStepSequence(notes, channel.rootKey);
-  const [menu, setMenu] = useState(false);
   const [dropping, setDropping] = useState(false);
   const plugin = getInstrument(channel.instrument);
   const a = actions();
@@ -50,6 +52,39 @@ const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected,
     a.selectChannel(channel.id);
     a.toggleWindow('pianoRoll', true);
   };
+
+  /** Replaces this channel's notes in the pattern (one undo step). */
+  const setSteps = (next: Note[]) => a.replaceNotes(pattern.id, channel.id, (notes ?? []).map((n) => n.id), next);
+
+  const openChannelMenu = (e: React.MouseEvent) =>
+    openContextMenu(
+      e,
+      [
+        { label: 'Piano roll', action: openPianoRoll },
+        { label: 'Abrir instrumento', action: openEditor },
+        {
+          label: 'Renomear…',
+          action: () => {
+            const name = prompt('Nome do canal', channel.name);
+            if (name) a.updateChannel(channel.id, { name });
+          },
+        },
+        ...(plugin?.usesSample ? [{ label: 'Carregar sample…', action: () => void loadSampleFile(channel.id) }] : []),
+        { label: 'Preencher a cada 2 passos', action: () => setSteps(fillEvery(steps, 2, channel.rootKey)) },
+        { label: 'Preencher a cada 4 passos', action: () => setSteps(fillEvery(steps, 4, channel.rootKey)) },
+        { label: 'Preencher a cada 8 passos', action: () => setSteps(fillEvery(steps, 8, channel.rootKey)) },
+        { label: 'Deslocar passos →', action: () => setSteps(shiftNotes(notes ?? [], 1, patternLength(pattern))) },
+        { label: 'Deslocar passos ←', action: () => setSteps(shiftNotes(notes ?? [], -1, patternLength(pattern))) },
+        { label: 'Aleatorizar passos', action: () => setSteps(randomSteps(steps, 0.35, channel.rootKey)) },
+        { label: 'Inverter passos', disabled: !stepMode, action: () => setSteps(invertSteps(notes ?? [], steps, channel.rootKey)) },
+        { label: 'Limpar notas deste pattern', action: () => a.clearNotes(pattern.id, channel.id) },
+        { label: 'Clonar canal', action: () => a.cloneChannel(channel.id) },
+        { label: 'Mover para cima', action: () => a.moveChannel(channel.id, -1) },
+        { label: 'Mover para baixo', action: () => a.moveChannel(channel.id, 1) },
+        { label: 'Excluir canal', danger: true, action: () => a.removeChannel(channel.id) },
+      ],
+      `${channel.name} · ${plugin?.name ?? ''}`,
+    );
 
   return (
     <div
@@ -114,36 +149,13 @@ const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected,
             openEditor();
           }}
           onContextMenu={(e) => {
-            e.preventDefault();
             a.selectChannel(channel.id);
-            setMenu(true);
+            openChannelMenu(e);
           }}
           title={`${channel.name} — ${plugin?.name ?? '?'} (clique: abrir · botão direito: opções)`}
         >
           {channel.name}
         </button>
-        {menu && (
-          <div className="context-menu" onMouseLeave={() => setMenu(false)}>
-            <button type="button" onClick={() => (setMenu(false), openPianoRoll())}>Piano roll</button>
-            <button type="button" onClick={() => (setMenu(false), openEditor())}>Abrir instrumento</button>
-            <button
-              type="button"
-              onClick={() => {
-                setMenu(false);
-                const name = prompt('Nome do canal', channel.name);
-                if (name) a.updateChannel(channel.id, { name });
-              }}
-            >
-              Renomear…
-            </button>
-            {plugin?.usesSample && <button type="button" onClick={() => (setMenu(false), void loadSampleFile(channel.id))}>Carregar sample…</button>}
-            <button type="button" onClick={() => (setMenu(false), a.cloneChannel(channel.id))}>Clonar</button>
-            <button type="button" onClick={() => (setMenu(false), a.moveChannel(channel.id, -1))}>Mover para cima</button>
-            <button type="button" onClick={() => (setMenu(false), a.moveChannel(channel.id, 1))}>Mover para baixo</button>
-            <button type="button" onClick={() => (setMenu(false), a.clearNotes(pattern.id, channel.id))}>Limpar notas deste pattern</button>
-            <button type="button" className="danger" onClick={() => (setMenu(false), a.removeChannel(channel.id))}>Excluir canal</button>
-          </div>
-        )}
       </div>
       <button
         type="button"
@@ -294,7 +306,7 @@ export function ChannelRack() {
                   type="button"
                   className="add-menu-main"
                   onClick={() => {
-                    a.addChannel(inst.id);
+                    addInstrumentChannel(inst.id);
                     setAdding(false);
                   }}
                   title={inst.description}
@@ -308,7 +320,7 @@ export function ChannelRack() {
                       key={p.name}
                       className="add-menu-preset"
                       onClick={() => {
-                        a.addChannel(inst.id, p.name);
+                        addInstrumentChannel(inst.id, p.name);
                         setAdding(false);
                       }}
                     >

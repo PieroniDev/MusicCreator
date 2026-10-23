@@ -33,6 +33,8 @@ export type DesktopCommand =
   | 'save'
   | 'save-as'
   | 'export-wav'
+  | 'export-midi'
+  | 'import-midi'
   | 'undo'
   | 'redo'
   | 'toggle-window'
@@ -46,7 +48,9 @@ export interface DesktopApi {
   readProject(path: string): Promise<OpenedFile>;
   saveProjectDialog(suggestedName: string): Promise<string | null>;
   writeProject(path: string, content: string): Promise<void>;
-  exportAudio(suggestedName: string, data: Uint8Array): Promise<string | null>;
+  /** Save dialog + write for exports: a WAV render or a MIDI file. */
+  exportFile(suggestedName: string, data: Uint8Array, kind: 'wav' | 'mid'): Promise<string | null>;
+  openMidiDialog(): Promise<{ name: string; data: Uint8Array } | null>;
   pickFolder(): Promise<string | null>;
   listDir(dir: string): Promise<DirEntry[]>;
   readAudio(path: string): Promise<Uint8Array>;

@@ -16,6 +16,8 @@ export interface NoteOptions {
   offset?: number;
   /** Always stop at the release, even in one-shot mode (audio clips end with the clip). */
   gated?: boolean;
+  /** Drum Pads: the decoded sample of each pad. */
+  pads?: Array<AudioBuffer | undefined>;
 }
 
 export interface Voice {
@@ -36,6 +38,8 @@ export interface InstrumentPlugin {
   presets: Preset[];
   /** Whether the instrument plays a user sample (shows the sample loader). */
   usesSample?: boolean;
+  /** Root key for new channels, when middle C is not the natural choice. */
+  defaultRootKey?: number;
   noteOn(ctx: BaseAudioContext, destination: AudioNode, options: NoteOptions): Voice;
 }
 
@@ -48,6 +52,8 @@ export interface EffectInstance {
   output: AudioNode;
   setParam(id: string, value: number, params: ParamValues): void;
   setTempo?(bpm: number, params: ParamValues): void;
+  /** Tempo-synced effects: a beat starts at context time `beatTime`; line the rhythm up with it. */
+  syncBeat?(beatTime: number): void;
   dispose(): void;
 }
 

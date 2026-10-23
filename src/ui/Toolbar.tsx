@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react';
+import { useRef } from 'react';
 import { actions, selectedPattern, useStore, type WindowId } from '../state/store';
 import { engine } from '../audio/engine';
 import { formatPosition } from '../model/time';
 import { DragNumber, IconButton } from './controls';
 import { usePlayheadFrame, usePlaying } from './hooks';
-import { exportWav, openProjectFile, saveProjectFile } from './fileOps';
+import { newProject, openProject, saveProject } from './fileOps';
+import { runExport, useExportProgress } from './exporter';
 
 const WINDOW_BUTTONS: Array<{ id: WindowId; label: string; key: string }> = [
   { id: 'playlist', label: 'Playlist', key: 'F5' },
@@ -38,20 +39,7 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
   const windows = useStore((s) => s.ui.windows);
   const canUndo = useStore((s) => s.past.length > 0);
   const canRedo = useStore((s) => s.future.length > 0);
-  const [exporting, setExporting] = useState<number | null>(null);
-
-  const doExport = async () => {
-    if (exporting !== null) return;
-    setExporting(0);
-    try {
-      await exportWav(setExporting);
-    } catch (err) {
-      console.error(err);
-      alert('Falha ao exportar o áudio.');
-    } finally {
-      setExporting(null);
-    }
-  };
+  const exporting = useExportProgress((s) => s.progress);
 
   return (
     <div className="toolbar">
@@ -68,16 +56,16 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
       </div>
 
       <div className="tool-group">
-        <IconButton onClick={() => confirm('Começar um projeto novo? O atual será descartado (salve antes se quiser).') && (engine.stop(), actions().newProject())} title="Novo projeto">
+        <IconButton onClick={newProject} title="Novo projeto">
           Novo
         </IconButton>
-        <IconButton onClick={() => void openProjectFile()} title="Abrir projeto (.mcproj)">
+        <IconButton onClick={() => void openProject()} title="Abrir projeto (.mcproj)">
           Abrir
         </IconButton>
-        <IconButton onClick={saveProjectFile} title="Salvar projeto (Ctrl+S)">
+        <IconButton onClick={() => void saveProject()} title="Salvar projeto (Ctrl+S)">
           Salvar
         </IconButton>
-        <IconButton onClick={() => void doExport()} title={`Exportar ${mode === 'song' ? 'a música' : 'o pattern'} como WAV`} disabled={exporting !== null}>
+        <IconButton onClick={() => void runExport()} title={`Exportar ${mode === 'song' ? 'a música' : 'o pattern'} como WAV`} disabled={exporting !== null}>
           {exporting === null ? 'Exportar WAV' : `Renderizando ${Math.round(exporting * 100)}%`}
         </IconButton>
       </div>

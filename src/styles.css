@@ -77,8 +77,8 @@ input[type='range'] {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 0 10px;
+  gap: 8px;
+  padding: 0 8px;
   background: linear-gradient(#2b3038, #21252b);
   border-bottom: 1px solid var(--edge);
   overflow-x: auto;
@@ -104,7 +104,7 @@ input[type='range'] {
 }
 
 .project-name {
-  width: 130px;
+  width: 112px;
   background: transparent;
   border-color: transparent;
   font-weight: 600;
@@ -125,7 +125,7 @@ input[type='range'] {
 
 .icon-btn {
   height: 26px;
-  padding: 0 9px;
+  padding: 0 7px;
   background: #343a44;
   border: 1px solid var(--edge);
   border-radius: 4px;

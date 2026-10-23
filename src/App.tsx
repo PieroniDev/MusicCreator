@@ -11,6 +11,7 @@ import { PluginWindow } from './ui/PluginEditor';
 import { installKeyboard } from './ui/keyboard';
 import { useElementSize } from './ui/hooks';
 import { hasSavedLayout } from './state/persist';
+import { resetLayout, setWorkspaceBounds } from './ui/layout';
 
 interface Bounds {
   w: number;
@@ -68,6 +69,7 @@ export function App() {
   useElementSize(workspace, (w, h) => {
     if (!w || !h) return;
     setBounds({ w, h });
+    setWorkspaceBounds(w, h);
     // First run: fit the default layout to this screen.
     if (!laidOut.current) {
       laidOut.current = true;
@@ -77,7 +79,7 @@ export function App() {
 
   return (
     <div className="app">
-      <Toolbar onResetLayout={() => bounds && actions().resetLayout(bounds.w, bounds.h)} />
+      <Toolbar onResetLayout={resetLayout} />
       <div className="main">
         <Browser />
         <div className="workspace" ref={workspace}>

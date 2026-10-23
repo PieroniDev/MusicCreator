@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { actions, useStore } from '../state/store';
 import { EFFECTS, INSTRUMENTS } from '../plugins/registry';
+import { confirmDiscard } from './fileOps';
 
 const SHORTCUTS: Array<[string, string]> = [
   ['Espaço', 'Tocar / parar'],
@@ -123,7 +124,7 @@ export function Browser() {
         )}
       </section>
 
-      <button type="button" className="browser-demo" onClick={() => confirm('Carregar a música demo? O projeto atual será substituído.') && a.loadDemo()}>
+      <button type="button" className="browser-demo" onClick={() => confirmDiscard() && a.loadDemo()}>
         Carregar demo
       </button>
     </aside>

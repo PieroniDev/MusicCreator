@@ -3,10 +3,13 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { engine } from './audio/engine';
 import { useStore } from './state/store';
-import { setupPersistence } from './state/persist';
+import { flushAutosave, setupPersistence } from './state/persist';
+import { installDocumentIntegration } from './desktop/integration';
 import './styles.css';
 
 setupPersistence();
+installDocumentIntegration();
+window.addEventListener('beforeunload', flushAutosave);
 
 engine.attach({
   getProject: () => useStore.getState().project,

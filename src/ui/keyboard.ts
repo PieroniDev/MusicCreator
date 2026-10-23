@@ -2,7 +2,9 @@ import { engine } from '../audio/engine';
 import { actions, useStore, type WindowId } from '../state/store';
 import type { Voice } from '../plugins/types';
 import { isTyping } from './focus';
-import { saveProjectFile } from './fileOps';
+import { newProject, openProject, saveProject } from './fileOps';
+import { runExport } from './exporter';
+import { desktop } from '../desktop/api';
 
 /** Physical key → semitone offset, laid out like a piano on a QWERTY keyboard. */
 const LOWER_ROW = ['KeyZ', 'KeyS', 'KeyX', 'KeyD', 'KeyC', 'KeyV', 'KeyG', 'KeyB', 'KeyH', 'KeyN', 'KeyJ', 'KeyM', 'Comma'];
@@ -34,7 +36,17 @@ export function installKeyboard(): () => void {
         a.redo();
       } else if (k === 's') {
         e.preventDefault();
-        saveProjectFile();
+        void saveProject(e.shiftKey);
+      } else if (desktop && k === 'o') {
+        // In a browser tab these belong to the browser; the desktop app takes them.
+        e.preventDefault();
+        void openProject();
+      } else if (desktop && k === 'n') {
+        e.preventDefault();
+        newProject();
+      } else if (desktop && k === 'r') {
+        e.preventDefault();
+        void runExport();
       }
       return;
     }

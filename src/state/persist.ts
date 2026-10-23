@@ -1,8 +1,10 @@
 import type { Project } from '../model/types';
 import { parseProject, serializeProject } from '../model/serialize';
-import { useStore, type UIState } from './store';
+import { isDirty, useStore, type UIState } from './store';
 
 let layoutRestored = false;
+/** Set when the window is closing without saving: no more autosaves after that. */
+let frozen = false;
 
 /** Whether a saved window layout was restored (otherwise the app fits one to the screen). */
 export function hasSavedLayout(): boolean {
@@ -11,6 +13,14 @@ export function hasSavedLayout(): boolean {
 
 const PROJECT_KEY = 'musiccreator:project';
 const LAYOUT_KEY = 'musiccreator:layout';
+
+interface Autosave {
+  project: Project;
+  /** File the project belongs to (desktop). */
+  path: string | null;
+  /** Whether it had changes not yet saved to that file. */
+  dirty: boolean;
+}
 
 function readJson(key: string): unknown {
   try {
@@ -30,12 +40,43 @@ function write(key: string, value: string): boolean {
   }
 }
 
+function writeAutosave(save: Autosave): void {
+  const json = (project: Project) => `{"path":${JSON.stringify(save.path)},"dirty":${save.dirty},"project":${serializeProject(project)}}`;
+  // Over the storage quota (big samples): keep everything else.
+  if (!write(PROJECT_KEY, json(save.project))) write(PROJECT_KEY, json({ ...save.project, samples: {} }));
+}
+
+/** Saves the current state right away (used before the window closes). */
+export function flushAutosave(): void {
+  if (frozen) return;
+  const s = useStore.getState();
+  writeAutosave({ project: s.project, path: s.doc.path, dirty: isDirty(s) });
+}
+
+/** Makes the next start open the last saved version instead of the unsaved changes. */
+export function discardUnsavedAutosave(): void {
+  frozen = true;
+  const { doc } = useStore.getState();
+  if (doc.saved) writeAutosave({ project: doc.saved, path: doc.path, dirty: false });
+  else {
+    try {
+      localStorage.removeItem(PROJECT_KEY);
+    } catch {
+      /* storage unavailable */
+    }
+  }
+}
+
 /** Restores the autosaved project and window layout, then keeps saving changes. */
 export function setupPersistence(): void {
-  const saved = readJson(PROJECT_KEY);
+  const saved = readJson(PROJECT_KEY) as Partial<Autosave> | null;
   if (saved) {
     try {
-      useStore.getState().loadProject(parseProject(saved));
+      // Older autosaves stored the bare project.
+      const wrapped = saved && 'project' in saved;
+      const project = parseProject(wrapped ? saved.project : saved);
+      const path = wrapped && typeof saved.path === 'string' ? saved.path : null;
+      useStore.getState().loadProject(project, path, !(wrapped && saved.dirty));
     } catch {
       /* corrupted autosave: keep the demo */
     }
@@ -56,20 +97,15 @@ export function setupPersistence(): void {
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let lastProject: Project | undefined;
-  let lastWindows: UIState['windows'] | undefined;
+  let last: unknown[] = [];
   useStore.subscribe((state) => {
-    if (state.project === lastProject && state.ui.windows === lastWindows) return;
-    lastProject = state.project;
-    lastWindows = state.ui.windows;
+    const current = [state.project, state.ui.windows, state.doc];
+    if (current.every((v, i) => v === last[i])) return;
+    last = current;
     clearTimeout(timer);
     timer = setTimeout(() => {
-      const { project, ui } = useStore.getState();
-      if (!write(PROJECT_KEY, serializeProject(project))) {
-        // Probably over the storage quota because of samples: keep the rest.
-        write(PROJECT_KEY, serializeProject({ ...project, samples: {} }));
-      }
-      write(LAYOUT_KEY, JSON.stringify({ windows: ui.windows }));
+      flushAutosave();
+      write(LAYOUT_KEY, JSON.stringify({ windows: useStore.getState().ui.windows }));
     }, 800);
   });
 }

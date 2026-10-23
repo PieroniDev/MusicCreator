@@ -88,13 +88,19 @@ export interface AppState {
   ui: UIState;
   /** Project snapshot at the start of a drag/knob gesture (undone as one step). */
   gestureBase: Project | null;
+  /**
+   * The file the project belongs to and the project as last saved/opened;
+   * the project has unsaved changes when it is not that same object.
+   */
+  doc: { path: string | null; saved: Project | null };
 
   undo(): void;
   redo(): void;
   beginGesture(): void;
   endGesture(): void;
 
-  loadProject(project: Project): void;
+  loadProject(project: Project, path?: string | null, saved?: boolean): void;
+  markSaved(path: string | null): void;
   newProject(): void;
   loadDemo(): void;
   setProjectName(name: string): void;
@@ -218,6 +224,7 @@ export const useStore = create<AppState>()((set, get) => {
     future: [],
     ui: initialUI(demo),
     gestureBase: null,
+    doc: { path: null, saved: demo },
 
     undo() {
       const { past, project, future, ui: current } = get();
@@ -241,14 +248,18 @@ export const useStore = create<AppState>()((set, get) => {
       else set({ gestureBase: null, past: [...past, gestureBase].slice(-HISTORY_LIMIT), future: [] });
     },
 
-    loadProject(project) {
+    loadProject(project, path = null, saved = true) {
       set((s) => ({
         project,
         past: [],
         future: [],
         gestureBase: null,
+        doc: { path, saved: saved ? project : null },
         ui: { ...initialUI(project), windows: s.ui.windows, pianoRoll: s.ui.pianoRoll, playlist: s.ui.playlist },
       }));
+    },
+    markSaved(path) {
+      set((s) => ({ doc: { path, saved: s.project } }));
     },
     newProject() {
       get().loadProject(createEmptyProject());
@@ -639,4 +650,8 @@ export function selectedPattern(state: AppState) {
 
 export function selectedChannel(state: AppState) {
   return state.project.channels.find((c) => c.id === state.ui.selectedChannelId);
+}
+
+export function isDirty(state: AppState): boolean {
+  return state.project !== state.doc.saved;
 }

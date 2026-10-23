@@ -2,28 +2,85 @@
   "name": "musiccreator",
   "private": true,
   "version": "0.1.0",
-  "description": "DAW original no navegador com fluxo de trabalho estilo pattern/playlist: Channel Rack, Piano Roll, Playlist, Mixer e plugins nativos.",
+  "description": "DAW original para desktop e navegador com fluxo de trabalho de patterns e playlist: Channel Rack, Piano Roll, Playlist, Mixer e plugins nativos.",
+  "author": "PieroniDev",
   "type": "module",
+  "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "vite",
+    "dev:desktop": "node scripts/dev-desktop.mjs",
     "build": "tsc && vite build",
+    "build:electron": "node scripts/build-electron.mjs",
+    "build:desktop": "npm run build && npm run build:electron",
+    "start:desktop": "npm run build:desktop && electron .",
+    "dist": "npm run build:desktop && electron-builder --publish never",
+    "dist:win": "npm run build:desktop && electron-builder --win --publish never",
+    "dist:mac": "npm run build:desktop && electron-builder --mac --publish never",
+    "dist:linux": "npm run build:desktop && electron-builder --linux --publish never",
     "preview": "vite preview",
-    "typecheck": "tsc",
+    "typecheck": "tsc && tsc -p electron",
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "dependencies": {
-    "immer": "10.2.0",
-    "react": "19.1.1",
-    "react-dom": "19.1.1",
-    "zustand": "5.0.8"
-  },
   "devDependencies": {
+    "@types/node": "22.19.1",
     "@types/react": "19.1.12",
     "@types/react-dom": "19.1.9",
     "@vitejs/plugin-react": "4.7.0",
+    "electron": "44.6.0",
+    "electron-builder": "26.16.1",
+    "esbuild": "0.25.12",
+    "immer": "10.2.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
     "typescript": "5.9.3",
-    "vite": "6.4.1",
-    "vitest": "3.2.4"
+    "vite": "6.4.5",
+    "vitest": "4.1.12",
+    "zustand": "5.0.8"
+  },
+  "build": {
+    "appId": "dev.pieroni.musiccreator",
+    "productName": "MusicCreator",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "mcproj",
+        "name": "Projeto MusicCreator",
+        "role": "Editor"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.music",
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Audio",
+      "icon": "build/icon.png"
+    }
   }
 }

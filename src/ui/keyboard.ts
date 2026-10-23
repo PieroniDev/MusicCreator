@@ -1,0 +1,89 @@
+import { engine } from '../audio/engine';
+import { actions, useStore, type WindowId } from '../state/store';
+import type { Voice } from '../plugins/types';
+import { isTyping } from './focus';
+import { saveProjectFile } from './fileOps';
+
+/** Physical key → semitone offset, laid out like a piano on a QWERTY keyboard. */
+const LOWER_ROW = ['KeyZ', 'KeyS', 'KeyX', 'KeyD', 'KeyC', 'KeyV', 'KeyG', 'KeyB', 'KeyH', 'KeyN', 'KeyJ', 'KeyM', 'Comma'];
+const UPPER_ROW = ['KeyQ', 'Digit2', 'KeyW', 'Digit3', 'KeyE', 'KeyR', 'Digit5', 'KeyT', 'Digit6', 'KeyY', 'Digit7', 'KeyU', 'KeyI', 'Digit9', 'KeyO', 'Digit0', 'KeyP'];
+
+const NOTE_KEYS = new Map<string, number>([
+  ...LOWER_ROW.map((code, i) => [code, 48 + i] as [string, number]),
+  ...UPPER_ROW.map((code, i) => [code, 60 + i] as [string, number]),
+]);
+
+const WINDOW_KEYS: Record<string, WindowId> = { F5: 'playlist', F6: 'channelRack', F7: 'pianoRoll', F9: 'mixer' };
+
+/** Global shortcuts: transport, windows, undo, and the computer-keyboard piano. */
+export function installKeyboard(): () => void {
+  const held = new Map<string, Voice | null>();
+
+  const down = (e: KeyboardEvent) => {
+    if (isTyping(e)) return;
+    const ctrl = e.ctrlKey || e.metaKey;
+    const a = actions();
+
+    if (ctrl) {
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        a.undo();
+      } else if (k === 'y' || (k === 'z' && e.shiftKey)) {
+        e.preventDefault();
+        a.redo();
+      } else if (k === 's') {
+        e.preventDefault();
+        saveProjectFile();
+      }
+      return;
+    }
+    if (e.altKey) return;
+
+    if (e.code === 'Space') {
+      e.preventDefault();
+      // Otherwise the focused button would also be "clicked" when Space is released.
+      if (document.activeElement instanceof HTMLButtonElement) document.activeElement.blur();
+      if (!e.repeat) engine.toggle();
+      return;
+    }
+    if (WINDOW_KEYS[e.key]) {
+      e.preventDefault();
+      a.toggleWindow(WINDOW_KEYS[e.key]);
+      return;
+    }
+    if (e.code === 'KeyL' && !e.repeat) {
+      a.setMode(useStore.getState().ui.mode === 'pattern' ? 'song' : 'pattern');
+      return;
+    }
+    const key = NOTE_KEYS.get(e.code);
+    if (key !== undefined) {
+      e.preventDefault();
+      if (e.repeat || held.has(e.code)) return;
+      const channelId = useStore.getState().ui.selectedChannelId;
+      held.set(e.code, channelId ? engine.previewNote(channelId, key, 0.8) : null);
+    }
+  };
+
+  const up = (e: KeyboardEvent) => {
+    const voice = held.get(e.code);
+    if (voice !== undefined) {
+      voice?.release(engine.context?.currentTime ?? 0);
+      held.delete(e.code);
+    }
+  };
+
+  const releaseAll = () => {
+    for (const v of held.values()) v?.release(engine.context?.currentTime ?? 0);
+    held.clear();
+  };
+
+  window.addEventListener('keydown', down);
+  window.addEventListener('keyup', up);
+  window.addEventListener('blur', releaseAll);
+  return () => {
+    window.removeEventListener('keydown', down);
+    window.removeEventListener('keyup', up);
+    window.removeEventListener('blur', releaseAll);
+  };
+}

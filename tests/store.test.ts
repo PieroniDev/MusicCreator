@@ -224,3 +224,85 @@ describe('store: playlist clip tools and drum pads', () => {
     expect(s().project.samples[sampleId]).toBeUndefined();
   });
 });
+
+describe('time-stretch settings', () => {
+  it('keeps audio clips covering the same audio when the speed changes', () => {
+    const a = useStore.getState();
+    a.newProject();
+    a.setBpm(120);
+    const id = a.addChannel('sampler');
+    const clip = a.addAudioClip(id, 0, 0, 384);
+    // The sample was recorded at 60 BPM: following 120 BPM it plays twice as fast, so the clip halves.
+    a.setChannelStretch(id, { mode: 'stretch', pitch: 0, bpm: 60 });
+    const find = () => useStore.getState().project.playlist.clips.find((c) => c.id === clip)!;
+    expect(find().length).toBe(192);
+    expect(useStore.getState().project.channels.find((c) => c.id === id)?.stretch).toEqual({ mode: 'stretch', pitch: 0, bpm: 60 });
+    // Pitch alone does not change the length in stretch mode...
+    a.setChannelStretch(id, { mode: 'stretch', pitch: 5, bpm: 60 });
+    expect(find().length).toBe(192);
+    // ...but does in resample mode.
+    a.setChannelStretch(id, { mode: 'resample', pitch: 12, bpm: 60 });
+    expect(find().length).toBe(96);
+    a.setChannelStretch(id, null);
+    expect(find().length).toBe(384);
+    expect(useStore.getState().project.channels.find((c) => c.id === id)?.stretch).toBeUndefined();
+    a.undo();
+    expect(find().length).toBe(96);
+  });
+});
+
+describe('playlist markers and loop region', () => {
+  it('adds, sorts, renames, moves and removes markers with undo', () => {
+    const a = useStore.getState();
+    a.newProject();
+    const m1 = a.addMarker(768, 'Refrão');
+    const m2 = a.addMarker(0);
+    const markers = () => useStore.getState().project.playlist.markers ?? [];
+    expect(markers().map((m) => m.name)).toEqual(['Marcador 2', 'Refrão']);
+    a.updateMarker(m2, { tick: 1536, name: '  Final ' });
+    expect(markers().map((m) => [m.name, m.tick])).toEqual([['Refrão', 768], ['Final', 1536]]);
+    a.removeMarker(m1);
+    a.removeMarker(m2);
+    expect(useStore.getState().project.playlist.markers).toBeUndefined();
+    a.undo();
+    expect(markers().map((m) => m.name)).toEqual(['Final']);
+  });
+
+  it('keeps the loop region ordered and drops empty ones', () => {
+    const a = useStore.getState();
+    a.setSongLoop({ start: 768, end: 384 });
+    expect(useStore.getState().ui.songLoop).toEqual({ start: 384, end: 768 });
+    a.setSongLoop({ start: 384, end: 384 });
+    expect(useStore.getState().ui.songLoop).toBeNull();
+  });
+});
+
+describe('note pan and fine pitch', () => {
+  it('stores them only when not centred, clamped', () => {
+    const a = useStore.getState();
+    a.newProject();
+    const { project, ui } = useStore.getState();
+    const channelId = project.channels[0].id;
+    a.toggleStep(ui.selectedPatternId, channelId, 0);
+    const note = () => useStore.getState().project.patterns.find((x) => x.id === ui.selectedPatternId)!.notes[channelId][0];
+    a.updateNotes(ui.selectedPatternId, channelId, { [note().id]: { pan: -3, fine: 250 } });
+    expect([note().pan, note().fine]).toEqual([-1, 100]);
+    a.updateNotes(ui.selectedPatternId, channelId, { [note().id]: { pan: 0, fine: 0 } });
+    expect('pan' in note() || 'fine' in note()).toBe(false);
+  });
+});
+
+describe('time signature', () => {
+  it('is stored only when not 4/4 and rejects odd beat units', () => {
+    const a = useStore.getState();
+    a.newProject();
+    a.setTimeSignature(7, 8);
+    expect(useStore.getState().project.timeSig).toEqual({ beats: 7, beatUnit: 8 });
+    a.setTimeSignature(3, 5);
+    expect(useStore.getState().project.timeSig).toEqual({ beats: 7, beatUnit: 8 });
+    a.setTimeSignature(4, 4);
+    expect(useStore.getState().project.timeSig).toBeUndefined();
+    a.undo();
+    expect(useStore.getState().project.timeSig).toEqual({ beats: 7, beatUnit: 8 });
+  });
+});

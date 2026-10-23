@@ -1,10 +1,10 @@
-import { memo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useRef, useState } from 'react';
 import type { Channel, Note, Pattern } from '../model/types';
 import { actions, selectedPattern, useStore } from '../state/store';
 import { isStepSequence, patternLength, patternSteps, stepIsOn } from '../model/pattern';
-import { TICKS_PER_STEP } from '../model/time';
+import { barTicks, beatTicks, keyName, TICKS_PER_STEP } from '../model/time';
 import { INSTRUMENTS, getInstrument } from '../plugins/registry';
-import { Knob, Led } from './controls';
+import { Knob, Led, startDrag } from './controls';
 import { usePlayheadFrame } from './hooks';
 import { addSamplerChannel, loadSampleBytes, loadSampleFile } from './fileOps';
 import { isAudioDrag, readDroppedAudio } from './dnd';
@@ -32,15 +32,129 @@ function NotePreview({ notes, length, color }: { notes: Note[]; length: number; 
   );
 }
 
+type GraphProp = 'velocity' | 'pan' | 'pitch' | 'fine';
+const GRAPH_PROPS: Array<{ id: GraphProp; label: string }> = [
+  { id: 'velocity', label: 'Velocity' },
+  { id: 'pan', label: 'Pan' },
+  { id: 'pitch', label: 'Nota (tom)' },
+  { id: 'fine', label: 'Afinação fina' },
+];
+const GRAPH_H = 60;
+/** Pitch range of the graph editor around the channel's root key. */
+const PITCH_RANGE = 12;
+
+/** A step's value as 0..1 from the bottom of the graph. */
+function graphNorm(n: Note, prop: GraphProp, rootKey: number): number {
+  switch (prop) {
+    case 'velocity': return n.velocity;
+    case 'pan': return ((n.pan ?? 0) + 1) / 2;
+    case 'fine': return ((n.fine ?? 0) + 100) / 200;
+    case 'pitch': return Math.min(1, Math.max(0, (n.key - rootKey + PITCH_RANGE) / (PITCH_RANGE * 2)));
+  }
+}
+
+function graphPatch(norm: number, prop: GraphProp, rootKey: number): Partial<Note> {
+  const x = Math.min(1, Math.max(0, norm));
+  const bipolar = Math.abs(x * 2 - 1) < 0.04 ? 0 : x * 2 - 1;
+  switch (prop) {
+    case 'velocity': return { velocity: Math.max(0.01, x) };
+    case 'pan': return { pan: bipolar };
+    case 'fine': return { fine: Math.round(bipolar * 100) };
+    case 'pitch': return { key: rootKey + Math.round((x * 2 - 1) * PITCH_RANGE) };
+  }
+}
+
+function graphLabel(n: Note, prop: GraphProp): string {
+  switch (prop) {
+    case 'velocity': return `${Math.round(n.velocity * 100)}%`;
+    case 'pan': return formatPan(n.pan ?? 0);
+    case 'fine': return `${(n.fine ?? 0) > 0 ? '+' : ''}${n.fine ?? 0} ct`;
+    case 'pitch': return keyName(n.key);
+  }
+}
+
+/**
+ * Graph editor under a channel: one bar per step for velocity, pan, the
+ * step's pitch or its fine tuning. Drag across the bars to draw values;
+ * the right button puts them back to the default.
+ */
+function StepGraph({ channel, pattern, steps, onClose }: { channel: Channel; pattern: Pattern; steps: number; onClose(): void }) {
+  const [prop, setProp] = useState<GraphProp>('velocity');
+  const area = useRef<HTMLDivElement>(null);
+  const notes = pattern.notes[channel.id] ?? [];
+  const byStep = new Map(notes.filter((n) => n.start % TICKS_PER_STEP === 0).map((n) => [n.start / TICKS_PER_STEP, n]));
+  const a = actions();
+
+  const draw = (e: React.PointerEvent) => {
+    if (e.button !== 0 && e.button !== 2) return;
+    e.preventDefault();
+    const reset = e.button === 2;
+    const apply = (clientX: number, clientY: number) => {
+      const rect = area.current!.getBoundingClientRect();
+      const step = Math.floor(((clientX - rect.left) / rect.width) * steps);
+      const note = byStep.get(step);
+      if (!note) return;
+      const norm = reset ? (prop === 'velocity' ? 0.78 : 0.5) : 1 - (clientY - rect.top) / rect.height;
+      a.updateNotes(pattern.id, channel.id, { [note.id]: graphPatch(norm, prop, channel.rootKey) });
+    };
+    apply(e.clientX, e.clientY);
+    startDrag(e, { onStart: () => a.beginGesture(), onMove: (_dx, _dy, ev) => apply(ev.clientX, ev.clientY), onEnd: () => a.endGesture() });
+  };
+
+  return (
+    <div className="rack-row graph-row">
+      <div className="graph-controls">
+        <select value={prop} onChange={(e) => setProp(e.target.value as GraphProp)} title="O que o gráfico edita em cada passo">
+          {GRAPH_PROPS.map((g) => (
+            <option key={g.id} value={g.id}>{g.label}</option>
+          ))}
+        </select>
+        <button type="button" className="text-btn" onClick={onClose} title="Fechar o editor de gráfico">
+          ✕
+        </button>
+      </div>
+      <div
+        ref={area}
+        className="step-graph"
+        style={{ gridTemplateColumns: `repeat(${steps}, 1fr)`, height: GRAPH_H }}
+        onPointerDown={draw}
+        onContextMenu={(e) => e.preventDefault()}
+        title="Arraste sobre os passos para desenhar · botão direito: valor padrão"
+      >
+        {prop !== 'velocity' && <div className="graph-center" />}
+        {Array.from({ length: steps }, (_, i) => {
+          const n = byStep.get(i);
+          if (!n) return <div key={i} className="graph-cell" />;
+          const v = graphNorm(n, prop, channel.rootKey);
+          const bipolar = prop !== 'velocity';
+          const top = bipolar ? Math.min(1 - v, 0.5) : 1 - v;
+          const height = bipolar ? Math.abs(v - 0.5) : v;
+          return (
+            <div key={i} className="graph-cell" title={`Passo ${i + 1}: ${graphLabel(n, prop)}`}>
+              <div className="graph-bar" style={{ top: `${top * 100}%`, height: `max(2px, ${height * 100}%)`, background: channel.color }} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 interface RowProps {
   channel: Channel;
   pattern: Pattern;
   steps: number;
   selected: boolean;
   mixerSize: number;
+  /** Ticks per bar and per beat of the project's time signature. */
+  bar: number;
+  beat: number;
+  /** Opens or closes the graph editor of a channel. */
+  onGraph(channelId: string): void;
 }
 
-const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected, mixerSize }: RowProps) {
+const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected, mixerSize, bar, beat, onGraph }: RowProps) {
+  const stepsPerBeat = Math.max(1, beat / TICKS_PER_STEP);
   const notes = pattern.notes[channel.id];
   const stepMode = isStepSequence(notes, channel.rootKey);
   const [dropping, setDropping] = useState(false);
@@ -62,6 +176,7 @@ const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected,
       [
         { label: 'Piano roll', action: openPianoRoll },
         { label: 'Abrir instrumento', action: openEditor },
+        { label: 'Editor de gráfico (velocity, pan, nota, afinação)', disabled: !stepMode, action: () => onGraph(channel.id) },
         {
           label: 'Renomear…',
           action: () => {
@@ -73,8 +188,8 @@ const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected,
         { label: 'Preencher a cada 2 passos', action: () => setSteps(fillEvery(steps, 2, channel.rootKey)) },
         { label: 'Preencher a cada 4 passos', action: () => setSteps(fillEvery(steps, 4, channel.rootKey)) },
         { label: 'Preencher a cada 8 passos', action: () => setSteps(fillEvery(steps, 8, channel.rootKey)) },
-        { label: 'Deslocar passos →', action: () => setSteps(shiftNotes(notes ?? [], 1, patternLength(pattern))) },
-        { label: 'Deslocar passos ←', action: () => setSteps(shiftNotes(notes ?? [], -1, patternLength(pattern))) },
+        { label: 'Deslocar passos →', action: () => setSteps(shiftNotes(notes ?? [], 1, patternLength(pattern, bar))) },
+        { label: 'Deslocar passos ←', action: () => setSteps(shiftNotes(notes ?? [], -1, patternLength(pattern, bar))) },
         { label: 'Aleatorizar passos', action: () => setSteps(randomSteps(steps, 0.35, channel.rootKey)) },
         { label: 'Inverter passos', disabled: !stepMode, action: () => setSteps(invertSteps(notes ?? [], steps, channel.rootKey)) },
         { label: 'Limpar notas deste pattern', action: () => a.clearNotes(pattern.id, channel.id) },
@@ -173,7 +288,7 @@ const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected,
                 type="button"
                 key={i}
                 data-step={i}
-                className={`step${on ? ' on' : ''}${Math.floor(i / 4) % 2 ? ' alt' : ''}`}
+                className={`step${on ? ' on' : ''}${Math.floor(i / stepsPerBeat) % 2 ? ' alt' : ''}${i % (bar / TICKS_PER_STEP) === 0 && i > 0 ? ' bar-start' : ''}`}
                 style={on ? { background: channel.color, opacity: 0.45 + velocity * 0.55 } : undefined}
                 onPointerDown={(e) => {
                   if (e.button === 2) return;
@@ -197,7 +312,7 @@ const ChannelRow = memo(function ChannelRow({ channel, pattern, steps, selected,
         </div>
       ) : (
         <button type="button" className="steps preview" onClick={openPianoRoll} title="Este canal tem notas no piano roll — clique para editar">
-          <NotePreview notes={notes ?? []} length={patternLength(pattern)} color={channel.color} />
+          <NotePreview notes={notes ?? []} length={patternLength(pattern, bar)} color={channel.color} />
         </button>
       )}
     </div>
@@ -230,7 +345,12 @@ export function ChannelRack() {
   const onlyPattern = useStore((s) => s.project.patterns.length <= 1);
   const swing = useStore((s) => s.project.swing);
   const [adding, setAdding] = useState(false);
-  const steps = patternSteps(pattern);
+  const [graphFor, setGraphFor] = useState<string | null>(null);
+  const toggleGraph = useCallback((id: string) => setGraphFor((g) => (g === id ? null : id)), []);
+  const sig = useStore((s) => s.project.timeSig);
+  const bar = barTicks(sig);
+  const beat = beatTicks(sig);
+  const steps = patternSteps(pattern, bar);
   const a = actions();
 
   return (
@@ -287,7 +407,21 @@ export function ChannelRack() {
       <div className="rack-rows">
         <div className="rack-rows-inner" style={{ ['--steps-min' as string]: `${steps * 15}px` }}>
           {channels.map((c) => (
-            <ChannelRow key={c.id} channel={c} pattern={pattern} steps={steps} selected={c.id === selectedChannelId} mixerSize={mixerSize} />
+            <Fragment key={c.id}>
+              <ChannelRow
+                channel={c}
+                pattern={pattern}
+                steps={steps}
+                selected={c.id === selectedChannelId}
+                mixerSize={mixerSize}
+                bar={bar}
+                beat={beat}
+                onGraph={toggleGraph}
+              />
+              {graphFor === c.id && isStepSequence(pattern.notes[c.id]) && (
+                <StepGraph channel={c} pattern={pattern} steps={steps} onClose={() => setGraphFor(null)} />
+              )}
+            </Fragment>
           ))}
           <div className="rack-playhead-lane">
             <StepPlayhead steps={steps} />

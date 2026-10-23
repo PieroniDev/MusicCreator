@@ -3,7 +3,8 @@
  * saved, loaded and diffed by reference (the store updates it immutably).
  *
  * Time is measured in ticks: PPQ (ticks per quarter note) = 96,
- * one step (1/16 note) = 24 ticks, one 4/4 bar = 384 ticks.
+ * one step (1/16 note) = 24 ticks, one 4/4 bar = 384 ticks (other time
+ * signatures: see barTicks in model/time).
  */
 
 export type ParamValues = Record<string, number>;
@@ -18,6 +19,10 @@ export interface Note {
   length: number;
   /** 0..1 */
   velocity: number;
+  /** -1 (left) .. 1 (right); absent = centre. */
+  pan?: number;
+  /** Fine pitch in cents, -100..100; absent = 0. */
+  fine?: number;
 }
 
 export interface Channel {
@@ -41,6 +46,20 @@ export interface Channel {
   sampleId?: string;
   /** Drum Pads: one sample asset per pad (null = empty pad). */
   pads?: Array<string | null>;
+  /** Sampler: time-stretch and pitch of the sample (absent = plays as recorded). */
+  stretch?: StretchSettings;
+}
+
+/**
+ * How a sample follows the project: `bpm` is the sample's own tempo (0 = it
+ * does not follow the project tempo) and `pitch` shifts it in semitones.
+ * 'resample' changes speed and pitch together, like a turntable; 'stretch'
+ * changes the length while keeping the pitch (and the pitch without the length).
+ */
+export interface StretchSettings {
+  mode: 'resample' | 'stretch';
+  pitch: number;
+  bpm: number;
 }
 
 export interface Pattern {
@@ -51,6 +70,14 @@ export interface Pattern {
   lengthBars: number;
   /** Notes per channel id. */
   notes: Record<string, Note[]>;
+}
+
+/** A named position on the song timeline (verse, chorus, drop...). */
+export interface Marker {
+  id: string;
+  /** Song position in ticks. */
+  tick: number;
+  name: string;
 }
 
 export interface PlaylistTrack {
@@ -77,7 +104,8 @@ export interface PatternClip extends ClipBase {
 
 /**
  * Plays the sample of a Sampler channel (whose settings and mixer routing it
- * uses) from `offset` seconds into the audio. Audio is not time-stretched.
+ * uses) from `offset` seconds into the original audio. The channel's stretch
+ * settings decide how fast the audio runs (see model/stretch).
  */
 export interface AudioClip extends ClipBase {
   kind: 'audio';
@@ -90,7 +118,9 @@ export type AutomationTarget =
   | { kind: 'channel'; channelId: string; param: 'volume' | 'pan' }
   | { kind: 'instrument'; channelId: string; param: string }
   | { kind: 'mixer'; track: number; param: 'volume' | 'pan' }
-  | { kind: 'effect'; track: number; slotId: string; param: string };
+  | { kind: 'effect'; track: number; slotId: string; param: string }
+  /** The song tempo (BPM). */
+  | { kind: 'tempo' };
 
 export interface AutomationPoint {
   /** Ticks from the clip start. */
@@ -146,10 +176,19 @@ export interface SampleAsset {
   data: string;
 }
 
+/** Beats per bar and the note value of a beat (4/4, 3/4, 6/8...). */
+export interface TimeSignature {
+  beats: number;
+  /** 2, 4, 8 or 16. */
+  beatUnit: number;
+}
+
 export interface Project {
   version: 1;
   name: string;
   bpm: number;
+  /** Absent means 4/4. */
+  timeSig?: TimeSignature;
   /** 0..1: delays every second 16th note by up to half a step. */
   swing: number;
   channels: Channel[];
@@ -157,6 +196,8 @@ export interface Project {
   playlist: {
     tracks: PlaylistTrack[];
     clips: PlaylistClip[];
+    /** Sorted by tick. Absent in projects saved before markers existed. */
+    markers?: Marker[];
   };
   /** Index 0 is the master track; the rest are inserts. */
   mixer: MixerTrack[];

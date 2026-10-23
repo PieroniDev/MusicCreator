@@ -20,6 +20,8 @@ export function formatDb(gain: number): string {
 }
 
 const CHANNEL_VOLUME: ParamSpec = { id: 'volume', name: 'Volume', min: 0, max: 1.25, default: 0.78, unit: '%' };
+/** Range of tempo automation clips. */
+export const TEMPO_SPEC: ParamSpec = { id: 'tempo', name: 'Andamento', min: 40, max: 240, default: 120, step: 0.01, unit: 'BPM' };
 const PAN: ParamSpec = { id: 'pan', name: 'Pan', min: -1, max: 1, default: 0 };
 
 /** How a target maps the clip's 0..1 curve to real values, plus where its value lives now. */
@@ -70,6 +72,8 @@ export function describeTarget(project: Project, target: AutomationTarget): Targ
         current: t.volume,
       };
     }
+    case 'tempo':
+      return fromSpec(TEMPO_SPEC, 'Andamento (BPM)', project.bpm);
     case 'effect': {
       const slot = project.mixer[target.track]?.effects.find((e) => e.id === target.slotId);
       const plugin = slot && getEffect(slot.plugin);
@@ -88,6 +92,7 @@ export function targetKey(target: AutomationTarget): string {
     case 'instrument': return `in:${target.channelId}:${target.param}`;
     case 'mixer': return `mx:${target.track}:${target.param}`;
     case 'effect': return `fx:${target.track}:${target.slotId}:${target.param}`;
+    case 'tempo': return 'tempo';
   }
 }
 
@@ -143,6 +148,20 @@ export function instrumentAutomationAt(project: Project, channelId: string, posi
     (out ??= {})[t.param] = info.toValue(curveAt(clip.points, position - clip.start));
   }
   return out;
+}
+
+/** The song tempo at a position: its automation clip if one covers it, otherwise the project BPM. */
+export function tempoAt(project: Project, position: number): number {
+  let bpm = project.bpm;
+  for (const clip of activeClips(project)) {
+    if (clip.target.kind !== 'tempo' || position < clip.start || position >= clip.start + clip.length) continue;
+    bpm = normToValue(TEMPO_SPEC, curveAt(clip.points, position - clip.start));
+  }
+  return bpm;
+}
+
+export function hasTempoAutomation(project: Project): boolean {
+  return project.playlist.clips.some((c) => c.kind === 'automation' && c.target.kind === 'tempo' && !project.playlist.tracks[c.track]?.mute);
 }
 
 export function hasAutomation(project: Project): boolean {

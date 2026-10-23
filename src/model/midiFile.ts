@@ -23,6 +23,8 @@ export interface MidiTrack {
 
 export interface MidiSong {
   bpm: number | null;
+  /** The file's first time signature, if it has one. */
+  timeSig?: { beats: number; beatUnit: number } | null;
   tracks: MidiTrack[];
 }
 
@@ -45,11 +47,15 @@ function chunk(type: string, data: number[]): number[] {
 }
 
 /** Writes a format 1 file: a tempo track, then one track per entry. */
-export function writeMidi(song: { bpm: number; tracks: MidiTrack[] }): Uint8Array<ArrayBuffer> {
+export function writeMidi(song: { bpm: number; timeSig?: { beats: number; beatUnit: number }; tracks: MidiTrack[] }): Uint8Array<ArrayBuffer> {
   const usPerQuarter = Math.round(60_000_000 / song.bpm);
+  const beats = song.timeSig?.beats ?? 4;
+  const unit = song.timeSig?.beatUnit ?? 4;
+  // Time signature: numerator, log2(denominator), MIDI clocks per metronome click, 32nds per quarter.
+  const clocks = Math.round((24 * 4) / unit);
   const tempoTrack = [
     0x00, 0xff, 0x51, 0x03, (usPerQuarter >> 16) & 0xff, (usPerQuarter >> 8) & 0xff, usPerQuarter & 0xff,
-    0x00, 0xff, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08, // 4/4
+    0x00, 0xff, 0x58, 0x04, beats & 0xff, Math.round(Math.log2(unit)), clocks, 0x08,
     0x00, 0xff, 0x2f, 0x00,
   ];
   const tracks = song.tracks.map((track) => {
@@ -128,6 +134,7 @@ export function readMidi(bytes: Uint8Array): MidiSong {
   const scale = PPQ / division;
 
   let bpm: number | null = null;
+  let timeSig: MidiSong['timeSig'] = null;
   const tracks: MidiTrack[] = [];
   for (let t = 0; t < trackCount && !r.done; t++) {
     const type = r.str(4);
@@ -159,7 +166,10 @@ export function readMidi(bytes: Uint8Array): MidiSong {
         const len = r.varLen();
         if (meta === 0x03 && !name) name = r.str(len);
         else if (meta === 0x51 && len === 3 && bpm === null) bpm = Math.round((60_000_000 / ((r.u8() << 16) | (r.u8() << 8) | r.u8())) * 100) / 100;
-        else r.skip(len);
+        else if (meta === 0x58 && len >= 2 && timeSig === null) {
+          timeSig = { beats: r.u8(), beatUnit: Math.pow(2, r.u8()) };
+          r.skip(len - 2);
+        } else r.skip(len);
         continue;
       }
       if (b === 0xf0 || b === 0xf7) {
@@ -199,5 +209,5 @@ export function readMidi(bytes: Uint8Array): MidiSong {
       tracks.push({ name: channels.length > 1 ? `${label} (canal ${ch + 1})` : label, channel: ch, notes });
     }
   }
-  return { bpm, tracks };
+  return { bpm, timeSig, tracks };
 }

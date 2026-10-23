@@ -1899,3 +1899,277 @@ input[type='range'] {
   background: linear-gradient(to right, #3ddc97 60%, #f5c542 85%, #ff5a5a);
   transform-origin: left;
 }
+
+/* Sampler time-stretch */
+.stretch-panel .param-row {
+  align-items: flex-end;
+}
+
+.commit-number {
+  width: 84px;
+}
+
+.stretch-info {
+  flex: 1 1 180px;
+  font-size: 11px;
+  color: var(--muted);
+  align-self: center;
+}
+
+/* Audio editor */
+.audio-editor {
+  width: min(880px, calc(100vw - 80px));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  outline: none;
+}
+
+.ae-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.ae-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  margin: 0 4px;
+}
+
+.ae-wave {
+  position: relative;
+  background: #0d1014;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: text;
+  touch-action: none;
+}
+
+.ae-wave canvas {
+  display: block;
+}
+
+.ae-selection {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 138, 61, 0.22);
+  border-left: 1px solid #ff8a3d;
+  border-right: 1px solid #ff8a3d;
+  pointer-events: none;
+}
+
+.ae-cursor,
+.ae-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #ff8a3d;
+  pointer-events: none;
+}
+
+.ae-playhead {
+  left: 0;
+  display: none;
+  background: #f2f4f7;
+}
+
+.ae-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.ae-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.ae-info .hint {
+  flex-basis: 100%;
+}
+
+.plugin-window.audio-window {
+  max-width: min(920px, calc(100% - 16px));
+}
+
+.audio-window .window-body {
+  padding: 8px;
+}
+
+/* Playlist loop region and markers */
+.pl-loop {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 138, 61, 0.16);
+  border-top: 3px solid #ff8a3d;
+  pointer-events: none;
+}
+
+.pl-loop-shade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 138, 61, 0.07);
+  border-left: 1px solid rgba(255, 138, 61, 0.6);
+  border-right: 1px solid rgba(255, 138, 61, 0.6);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.pl-marker {
+  position: absolute;
+  bottom: 2px;
+  max-width: 140px;
+  padding: 1px 6px 1px 5px;
+  font-size: 10px;
+  line-height: 13px;
+  color: #10131a;
+  background: #ffd23d;
+  border-radius: 0 3px 3px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: grab;
+  z-index: 2;
+}
+
+.pl-marker-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed rgba(255, 210, 61, 0.55);
+  pointer-events: none;
+}
+
+.loop-chip {
+  border: 1px solid #ff8a3d;
+  background: rgba(255, 138, 61, 0.15);
+  color: #ffb27d;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* Piano roll event lane (pan, fine pitch) */
+.pr-velocity-label select {
+  width: 100%;
+  font-size: 10px;
+  padding: 1px 2px;
+}
+
+.ev-center {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 36px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+}
+
+.ev-bar {
+  position: absolute;
+  width: 3px;
+}
+
+.ev-bar.selected {
+  outline: 1px solid #fff;
+}
+
+.ev-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+/* Channel rack graph editor */
+.rack-row.graph-row {
+  height: auto;
+  padding-top: 2px;
+  padding-bottom: 6px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.graph-controls {
+  grid-column: 1 / 7;
+  display: flex;
+  gap: 4px;
+  align-items: flex-start;
+  align-self: start;
+}
+
+.graph-controls select {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.step-graph {
+  grid-column: 7;
+  position: relative;
+  display: grid;
+  gap: 2px;
+  background: #1c1f24;
+  border: 1px solid #16191d;
+  border-radius: 3px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.graph-cell {
+  position: relative;
+  border-right: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.graph-bar {
+  position: absolute;
+  left: 15%;
+  right: 15%;
+  border-radius: 2px;
+  opacity: 0.9;
+}
+
+.graph-center {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px dashed rgba(255, 255, 255, 0.15);
+  pointer-events: none;
+}
+
+.time-sig {
+  font: 600 13px var(--mono);
+  color: #ffb37d;
+  background: #0c0e10;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+
+.time-sig:hover {
+  border-color: var(--accent);
+}
+
+.step.bar-start {
+  border-left-color: rgba(255, 255, 255, 0.5);
+}
+
+.bpm-live {
+  font: 11px var(--mono);
+  color: #7ed957;
+  min-width: 0;
+}

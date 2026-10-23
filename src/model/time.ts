@@ -1,8 +1,38 @@
+import type { TimeSignature } from './types';
+
 export const PPQ = 96;
 export const TICKS_PER_STEP = PPQ / 4;
 export const BEATS_PER_BAR = 4;
+/** A 4/4 bar; use barTicks() for the project's own time signature. */
 export const TICKS_PER_BAR = PPQ * BEATS_PER_BAR;
 export const STEPS_PER_BAR = TICKS_PER_BAR / TICKS_PER_STEP;
+
+export const BEAT_UNITS = [2, 4, 8, 16];
+export const MAX_BEATS = 16;
+
+/** Ticks per beat of a time signature (a quarter note in x/4, an eighth in x/8...). */
+export function beatTicks(sig?: TimeSignature): number {
+  return (PPQ * 4) / (sig?.beatUnit ?? 4);
+}
+
+/** Ticks per bar of a time signature (always a whole number of steps). */
+export function barTicks(sig?: TimeSignature): number {
+  return beatTicks(sig) * (sig?.beats ?? 4);
+}
+
+export function formatTimeSig(sig?: TimeSignature): string {
+  return `${sig?.beats ?? 4}/${sig?.beatUnit ?? 4}`;
+}
+
+/** Snap values that depend on the time signature (resolved with resolveSnap). */
+export const SNAP_BAR = -1;
+export const SNAP_BEAT = -2;
+
+export function resolveSnap(snap: number, sig?: TimeSignature): number {
+  if (snap === SNAP_BAR) return barTicks(sig);
+  if (snap === SNAP_BEAT) return beatTicks(sig);
+  return Math.max(1, snap);
+}
 
 export function secondsPerTick(bpm: number): number {
   return 60 / bpm / PPQ;
@@ -34,12 +64,11 @@ export function snapRound(ticks: number, snap: number): number {
 }
 
 /** "bar:beat:step" (1-based), the format shown in the transport display. */
-export function formatPosition(ticks: number): string {
+export function formatPosition(ticks: number, sig?: TimeSignature): string {
   const t = Math.max(0, Math.floor(ticks));
-  const bar = Math.floor(t / TICKS_PER_BAR) + 1;
-  const beat = Math.floor((t % TICKS_PER_BAR) / PPQ) + 1;
-  const step = Math.floor((t % PPQ) / TICKS_PER_STEP) + 1;
-  return `${bar}:${beat}:${step}`;
+  const bar = barTicks(sig);
+  const beat = beatTicks(sig);
+  return `${Math.floor(t / bar) + 1}:${Math.floor((t % bar) / beat) + 1}:${Math.floor((t % beat) / TICKS_PER_STEP) + 1}`;
 }
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];

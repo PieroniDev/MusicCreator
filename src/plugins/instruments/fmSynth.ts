@@ -39,10 +39,10 @@ export const fmSynth: InstrumentPlugin = {
     { name: 'Marimba', params: { carrierRatio: 1, modRatio: 4, modIndex: 2.5, modDecay: 0.12, modSustain: 0, decay: 0.5, sustain: 0, release: 0.3, gain: 0.6 } },
   ],
 
-  noteOn(ctx, destination, { key, velocity, time, params: values }) {
+  noteOn(ctx, destination, { key, velocity, time, params: values, detune = 0 }) {
     const p = paramReader(params, values);
     const voice = new NodeVoice(ctx, destination);
-    const f = keyToFrequency(key);
+    const f = keyToFrequency(key + detune / 100);
 
     const carrier = voice.source(ctx.createOscillator());
     carrier.type = WAVEFORMS[Math.round(p('carrierWave'))] ?? 'sine';

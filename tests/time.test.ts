@@ -33,3 +33,26 @@ describe('time', () => {
     expect(secondsPerTick(120) * TICKS_PER_BAR).toBeCloseTo(2);
   });
 });
+
+describe('time signatures', () => {
+  it('sizes beats and bars', async () => {
+    const { barTicks, beatTicks, formatTimeSig, resolveSnap, SNAP_BAR, SNAP_BEAT } = await import('../src/model/time');
+    expect(barTicks()).toBe(384);
+    expect(barTicks({ beats: 3, beatUnit: 4 })).toBe(288);
+    expect(beatTicks({ beats: 6, beatUnit: 8 })).toBe(48);
+    expect(barTicks({ beats: 7, beatUnit: 8 })).toBe(336);
+    expect(barTicks({ beats: 5, beatUnit: 16 })).toBe(120);
+    expect(formatTimeSig({ beats: 6, beatUnit: 8 })).toBe('6/8');
+    expect(resolveSnap(SNAP_BAR, { beats: 3, beatUnit: 4 })).toBe(288);
+    expect(resolveSnap(SNAP_BEAT, { beats: 6, beatUnit: 8 })).toBe(48);
+    expect(resolveSnap(24)).toBe(24);
+  });
+
+  it('formats positions in the signature', async () => {
+    const { formatPosition } = await import('../src/model/time');
+    expect(formatPosition(288, { beats: 3, beatUnit: 4 })).toBe('2:1:1');
+    expect(formatPosition(288 + 96 + 24, { beats: 3, beatUnit: 4 })).toBe('2:2:2');
+    // 6/8: beats are eighths (two steps).
+    expect(formatPosition(48 * 5 + 24, { beats: 6, beatUnit: 8 })).toBe('1:6:2');
+  });
+});

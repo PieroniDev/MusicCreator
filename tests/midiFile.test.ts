@@ -54,3 +54,11 @@ describe('MIDI files', () => {
     expect(() => readMidi(new TextEncoder().encode('hello world!'))).toThrow();
   });
 });
+
+describe('time signatures in MIDI files', () => {
+  it('writes and reads the project signature', () => {
+    const bytes = writeMidi({ bpm: 100, timeSig: { beats: 6, beatUnit: 8 }, tracks: [{ name: 'A', channel: 0, notes: [{ key: 60, start: 0, length: 24, velocity: 0.5 }] }] });
+    expect(readMidi(bytes).timeSig).toEqual({ beats: 6, beatUnit: 8 });
+    expect(readMidi(writeMidi({ bpm: 100, tracks: [] })).timeSig).toEqual({ beats: 4, beatUnit: 4 });
+  });
+});

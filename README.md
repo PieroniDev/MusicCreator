@@ -119,8 +119,10 @@ programa. Aperte **Espaço** para tocar.
 ### Channel Rack (F6)
 - Um canal por instrumento: ligar/mudo (clique no LED), **solo** (botão direito no LED),
   pan, volume e faixa do mixer.
-- **Step sequencer** com 16 passos por compasso e patterns de vários compassos. A roda do
-  mouse sobre um passo ajusta a velocity.
+- **Step sequencer** com um passo por semicolcheia (16 por compasso em 4/4) e patterns de
+  vários compassos. A roda do mouse sobre um passo ajusta a velocity.
+- **Editor de gráfico** (botão direito no nome do canal): velocity, pan, nota e afinação
+  fina de cada passo. Arraste sobre as barras para desenhar; botão direito volta ao padrão.
 - **Swing** global no cabeçalho.
 - Menu do canal (botão direito no nome): piano roll, renomear, clonar, mover, excluir,
   carregar sample e ferramentas de passos (**preencher a cada 2/4/8 passos**,
@@ -131,7 +133,8 @@ programa. Aperte **Espaço** para tocar.
   Botão direito apaga.
 - Seleção por retângulo (Ctrl+arrastar) e Shift+clique; Del, Ctrl+A/C/V, Ctrl+B
   (duplicar) e setas para transpor.
-- Faixa de **velocity**, notas fantasma dos outros canais e teclado clicável.
+- Faixa de eventos embaixo, com **velocity**, **pan** e **afinação fina** de cada nota;
+  notas fantasma dos outros canais e teclado clicável.
 - Menu **Ferramentas**, aplicado à seleção ou a todas as notas: quantizar (início,
   início+duração, 50%), legato, **arpejador** (↑, ↓, ↑↓ na grade), strum, picotar,
   humanizar, inverter, transformar em acorde e encaixar na escala.
@@ -148,7 +151,11 @@ programa. Aperte **Espaço** para tocar.
   no MIDI. As notas entram no pattern, alinhadas à grade do piano roll.
 - **Gravar áudio** (microfone ou interface): botão direito no **●** → "Gravar áudio",
   arme e toque a música (modo SONG). Cada take vira um canal Sampler e um clip de áudio na
-  Playlist, em qualidade total (PCM, sem compressão).
+  Playlist, em qualidade total (PCM, sem compressão). No mesmo menu dá para escolher a
+  **entrada** e **ouvir a entrada** pelo master (use fones). Sem região de loop, a música
+  segue tocando depois do fim enquanto grava.
+- **Gravar em loop (takes)**: com uma região de loop na Playlist, cada volta vira um take
+  numa faixa própria; os takes antigos ficam mudos e só o último toca.
 - **Exportar e importar MIDI** (`.mid`) no menu **Arquivo**. Faixas de bateria General
   MIDI viram canais de Drum Synth separados (kick, snare, hats…).
 
@@ -160,9 +167,15 @@ programa. Aperte **Espaço** para tocar.
 - **Clips de automação**: clique com o botão direito em **qualquer knob ou fader** e
   escolha **Criar clip de automação**. Na Playlist, arraste os pontos da curva, dê duplo
   clique para criar um ponto e botão direito num ponto para apagar. Dá para automatizar
-  volume/pan dos canais, qualquer parâmetro de instrumento, volume/pan do mixer e
-  qualquer parâmetro de efeito.
-- Faixas com mudo e nome, grade, zoom e régua para escolher onde a música começa.
+  volume/pan dos canais, qualquer parâmetro de instrumento, volume/pan do mixer,
+  qualquer parâmetro de efeito e o **andamento** (botão direito no BPM; de 40 a 240 BPM,
+  ao vivo e na exportação).
+- Faixas com mudo e nome, grade e zoom.
+- **Régua**: clique para tocar dali; **arraste para criar uma região de loop** (o modo SONG
+  repete só ela); botão direito para **marcadores** (verso, refrão…), que podem ser
+  arrastados, renomeados e clicados para pular até eles.
+- **Clips de áudio que acompanham o BPM**: no menu do clip, "Acompanhar o tempo do projeto"
+  detecta o andamento do loop e estica o áudio sem mudar a afinação.
 - **Ctrl+B** duplica o clip selecionado. O botão direito no nome do clip abre o menu
   (duplicar, **tornar único** — o clip ganha a própria cópia do pattern —, abrir, excluir).
 
@@ -180,7 +193,7 @@ programa. Aperte **Espaço** para tocar.
 | **FM Synth** | FM de 2 operadores: pianos elétricos, sinos, baixos e metais. |
 | **Drum Synth** | Bateria sintetizada: kick, snare, clap, hats, tom, rim, cowbell e prato. |
 | **Drum Pads** | 16 pads com um sample cada (teclas C3 a D#4), já vem com um kit sintetizado; arraste seus samples nos pads. |
-| **Sampler** | Qualquer arquivo de áudio: afinação pela nota, one-shot ou loop, reverso, filtro e ADSR. |
+| **Sampler** | Qualquer arquivo de áudio: afinação pela nota, one-shot ou loop, reverso, filtro e ADSR. **Time-stretch**: acompanha o BPM do projeto (com detecção do andamento do loop) e muda a afinação sem mudar a duração, ou no modo resample (velocidade e afinação juntas). |
 | **Slicer** | Fatia um loop pelos ataques ou em partes iguais, uma fatia por tecla; "Gerar notas das fatias" recria o loop no Piano Roll. |
 
 ### Efeitos nativos
@@ -190,7 +203,14 @@ Parametric EQ, Compressor, **Multiband Compressor** (3 bandas), Limiter, Delay
 Pump**. Os dois últimos ficam sincronizados às batidas da música, também na exportação.
 Todos têm presets.
 
+### Editor de áudio
+Botão "Editar áudio…" no sampler ou no menu de um clip de áudio. Selecione um trecho na
+forma de onda (roda: zoom) e ouça, recorte, apague, silencie, normalize, aplique fade
+in/out, reverso, ganho de ±3 dB ou remova o DC. Cada edição pode ser desfeita.
+
 ### Projeto
+- **Fórmula de compasso** (botão ao lado do BPM): 3/4, 6/8, 7/8… A Playlist, o Piano Roll,
+  o Channel Rack, o metrônomo e o MIDI exportado seguem o compasso escolhido.
 - Desfazer/refazer em tudo (Ctrl+Z / Ctrl+Y) e autosave.
 - Arquivos `.mcproj` guardam os samples dentro do projeto.
 - **Exportar WAV** (16 bits, 44,1 kHz) da música ou do pattern, com automação, clips de
@@ -228,11 +248,13 @@ Este é um projeto em fases. As maiores lacunas, em ordem de impacto:
    VST3 e saída ASIO/WASAPI de baixa latência. A interface atual continuaria, conversando
    com esse motor. O SDK do VST3 é MIT desde a versão 3.8; o JUCE facilitaria, mas tem
    licença AGPL ou comercial, uma escolha a fazer antes de começar.
-2. **Time-stretch e pitch-shift** de clips de áudio (seguir o BPM), e um editor de áudio.
-3. Escolher a entrada de áudio, monitorar a entrada e gravar em loop (takes).
-4. Automação de **tempo**, sidechain e compensação de latência de plugins.
-5. Mais instrumentos e efeitos: wavetable, granular, vocoder, multibanda, gate e
-   transient shaper.
-6. Editor de parâmetros por passo (pitch/pan por passo), fórmulas de compasso além de
-   4/4, marcadores na playlist e importação de `.flp` pela documentação pública do
-   formato (por exemplo, o projeto PyFLP).
+2. **Sidechain de verdade** (compressor ouvindo outro insert) e compensação de latência
+   de plugins.
+3. Mais instrumentos e efeitos: wavetable, granular, vocoder, pitch shifter, transient
+   shaper e analisador de espectro.
+4. Mudanças de andamento e de compasso no meio da música por marcadores, e exportar a
+   automação de andamento no MIDI.
+5. Consolidar (renderizar) clips e patterns em áudio, e ferramentas de fatiar e mutar
+   clips na Playlist.
+6. Importação de `.flp` pela documentação pública do formato (por exemplo, o projeto
+   PyFLP).

@@ -89,7 +89,7 @@ export const slicer: InstrumentPlugin = {
     { name: 'Chop curto', params: { gate: 1, release: 0.02 } },
   ],
 
-  noteOn(ctx, destination, { key, velocity, time, rootKey, params: values, sample }) {
+  noteOn(ctx, destination, { key, velocity, time, rootKey, params: values, sample, detune = 0 }) {
     const p = paramReader(params, values);
     const voice = new NodeVoice(ctx, destination);
     const points = sample ? slicePoints(sample, values) : [];
@@ -101,7 +101,7 @@ export const slicer: InstrumentPlugin = {
     }
     const start = points[index];
     const end = points[index + 1] ?? sample.duration;
-    const rate = Math.pow(2, p('pitch') / 12);
+    const rate = Math.pow(2, (p('pitch') + detune / 100) / 12);
     const src = voice.source(ctx.createBufferSource());
     src.buffer = sample;
     src.playbackRate.value = rate;

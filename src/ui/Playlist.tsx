@@ -2,11 +2,24 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AudioClip, AutomationClip, Channel, Pattern, PlaylistClip } from '../model/types';
 import { actions, selectedPattern, useStore } from '../state/store';
 import { patternLength, songLength } from '../model/pattern';
-import { secondsPerTick, snapFloor, snapRound, TICKS_PER_BAR, PPQ, TICKS_PER_STEP } from '../model/time';
+import {
+  barTicks,
+  formatPosition,
+  resolveSnap,
+  secondsPerTick,
+  SNAP_BAR,
+  SNAP_BEAT,
+  snapFloor,
+  snapRound,
+  TICKS_PER_BAR,
+  TICKS_PER_STEP,
+} from '../model/time';
 import { describeTarget } from '../model/automation';
+import { guessBpm, sourceSpeed } from '../model/stretch';
 import { engine } from '../audio/engine';
 import { startDrag } from './controls';
 import { useDecodedSample, usePlayheadFrame } from './hooks';
+import { getDecodedSample } from '../audio/samples';
 import { getActiveScope, isTyping, setActiveScope } from './focus';
 import { addSamplerChannel } from './fileOps';
 import { isAudioDrag, readDroppedAudio } from './dnd';
@@ -14,7 +27,7 @@ import { openContextMenu } from './ContextMenu';
 
 const LANE_H = 42;
 const HEADER_W = 132;
-const RULER_H = 22;
+const RULER_H = 34;
 const CLIP_HEADER = 14;
 const BASE_PPT = 64 / TICKS_PER_BAR;
 const EDGE_PX = 7;
@@ -23,15 +36,15 @@ const AUTOMATION_COLOR = '#7ed957';
 const AUDIO_COLOR = '#3dc6ff';
 
 const SNAP_OPTIONS = [
-  { label: 'Compasso', ticks: TICKS_PER_BAR },
-  { label: 'Tempo', ticks: PPQ },
+  { label: 'Compasso', ticks: SNAP_BAR },
+  { label: 'Tempo', ticks: SNAP_BEAT },
   { label: 'Passo', ticks: TICKS_PER_STEP },
   { label: 'Livre', ticks: 1 },
 ];
 
 /** Miniature of a pattern's notes, repeated across the clip like playback does. */
-const PatternPreview = memo(function PatternPreview({ pattern, clipLength }: { pattern: Pattern; clipLength: number }) {
-  const length = patternLength(pattern);
+const PatternPreview = memo(function PatternPreview({ pattern, clipLength, bar }: { pattern: Pattern; clipLength: number; bar: number }) {
+  const length = patternLength(pattern, bar);
   const all = Object.values(pattern.notes).flat();
   if (!all.length) return null;
   const keys = all.map((n) => n.key);
@@ -62,7 +75,7 @@ const PatternPreview = memo(function PatternPreview({ pattern, clipLength }: { p
 });
 
 /** Waveform of the part of the sample an audio clip plays. */
-const AudioPreview = memo(function AudioPreview({ clip, channel, ppt, spt }: { clip: AudioClip; channel?: Channel; ppt: number; spt: number }) {
+const AudioPreview = memo(function AudioPreview({ clip, channel, ppt, spt, speed }: { clip: AudioClip; channel?: Channel; ppt: number; spt: number; speed: number }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const buffer = useDecodedSample(channel?.sampleId);
   const width = Math.min(4096, Math.max(1, Math.round(clip.length * ppt)));
@@ -76,7 +89,7 @@ const AudioPreview = memo(function AudioPreview({ clip, channel, ppt, spt }: { c
     if (!buffer) return;
     const data = buffer.getChannelData(0);
     const from = clip.offset * buffer.sampleRate;
-    const perPixel = (clip.length * spt * buffer.sampleRate) / width;
+    const perPixel = (clip.length * spt * speed * buffer.sampleRate) / width;
     const mid = el.height / 2;
     ctx.fillStyle = AUDIO_COLOR;
     for (let x = 0; x < width; x++) {
@@ -89,7 +102,7 @@ const AudioPreview = memo(function AudioPreview({ clip, channel, ppt, spt }: { c
       for (let i = a; i < b; i += stride) peak = Math.max(peak, Math.abs(data[i]));
       ctx.fillRect(x, mid - peak * mid, 1, Math.max(1, peak * mid * 2));
     }
-  }, [buffer, clip.offset, clip.length, width, spt]);
+  }, [buffer, clip.offset, clip.length, width, spt, speed]);
   return <canvas ref={canvas} className="clip-wave" />;
 });
 
@@ -116,22 +129,27 @@ function AutomationCurve({ clip, ppt }: { clip: AutomationClip; ppt: number }) {
 
 export function Playlist() {
   const project = useStore((s) => s.project);
-  const { snap, zoom } = useStore((s) => s.ui.playlist);
+  const { snap: snapSetting, zoom } = useStore((s) => s.ui.playlist);
   const songStart = useStore((s) => s.ui.songStart);
+  const songLoop = useStore((s) => s.ui.songLoop);
   const mode = useStore((s) => s.ui.mode);
   const current = useStore(selectedPattern);
   const gridRef = useRef<HTMLDivElement>(null);
+  const rulerRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef<HTMLDivElement>(null);
   const [selectedClip, setSelectedClip] = useState<string | null>(null);
   const [dropping, setDropping] = useState(false);
   const a = actions();
 
   const ppt = BASE_PPT * zoom;
+  const bar = barTicks(project.timeSig);
+  const snap = resolveSnap(snapSetting, project.timeSig);
   const spt = secondsPerTick(project.bpm);
   const { tracks, clips } = project.playlist;
-  const bars = Math.max(MIN_BARS, songLength(project) / TICKS_PER_BAR + 8);
-  const width = bars * TICKS_PER_BAR * ppt;
+  const bars = Math.max(MIN_BARS, songLength(project) / bar + 8);
+  const width = bars * bar * ppt;
   const height = tracks.length * LANE_H;
+  const markers = project.playlist.markers ?? [];
   const patterns = new Map(project.patterns.map((p) => [p.id, p]));
   const channels = new Map(project.channels.map((c) => [c.id, c]));
 
@@ -183,10 +201,11 @@ export function Playlist() {
           a.updateClip(clip.id, { length: Math.max(step, end - origin.start) });
         } else if (edge === 'start' && origin.kind === 'audio') {
           // Trimming the front of an audio clip skips into the sample.
-          const minStart = Math.max(0, origin.start - origin.offset / spt);
+          const secondsPerTickOfSample = spt * sourceSpeed(channels.get(origin.channelId)?.stretch, project.bpm);
+          const minStart = Math.max(0, origin.start - origin.offset / secondsPerTickOfSample);
           const start = Math.min(origin.start + origin.length - TICKS_PER_STEP, Math.max(minStart, snapRound(origin.start + dx / ppt, step)));
           const moved = start - origin.start;
-          a.updateClip(clip.id, { start, length: origin.length - moved, offset: Math.max(0, origin.offset + moved * spt) });
+          a.updateClip(clip.id, { start, length: origin.length - moved, offset: Math.max(0, origin.offset + moved * secondsPerTickOfSample) });
         } else {
           const start = Math.max(0, snapRound(origin.start + dx / ppt, step));
           a.updateClip(clip.id, { start, track: origin.track + Math.round(dy / LANE_H) });
@@ -306,10 +325,112 @@ export function Playlist() {
               },
             ]
           : []),
-        ...(clip.kind === 'audio' ? [{ label: 'Abrir o sampler', action: () => a.openPluginWindow({ kind: 'channel', channelId: clip.channelId }) }] : []),
+        ...(clip.kind === 'audio'
+          ? [
+              {
+                label: 'Acompanhar o tempo do projeto (stretch)',
+                action: () => {
+                  const channel = channels.get(clip.channelId);
+                  const duration = getDecodedSample(channel?.sampleId)?.duration;
+                  if (!channel || !duration) return;
+                  a.setChannelStretch(channel.id, { mode: 'stretch', pitch: channel.stretch?.pitch ?? 0, bpm: guessBpm(duration, project.bpm) });
+                },
+              },
+              { label: 'Editar áudio…', action: () => a.openPluginWindow({ kind: 'audio', channelId: clip.channelId }) },
+              { label: 'Abrir o sampler (tempo e afinação)', action: () => a.openPluginWindow({ kind: 'channel', channelId: clip.channelId }) },
+            ]
+          : []),
         { label: 'Excluir', danger: true, action: () => a.removeClip(clip.id) },
       ],
       'Clip',
+    );
+  };
+
+  const jumpTo = (tick: number) => {
+    a.setSongStart(tick);
+    if (engine.isPlaying && mode === 'song') engine.restart();
+  };
+  const rulerTick = (clientX: number) => Math.max(0, (clientX - rulerRef.current!.getBoundingClientRect().left) / ppt);
+  const renameMarker = (id: string, current: string) => {
+    const name = prompt('Nome do marcador', current);
+    if (name) a.updateMarker(id, { name });
+  };
+
+  /** Ruler: click sets where the song starts, drag selects a loop region; markers can be clicked and dragged. */
+  const onRulerPointerDown = (e: React.PointerEvent) => {
+    const markerEl = (e.target as Element).closest<HTMLElement>('[data-marker]');
+    const marker = markerEl ? markers.find((m) => m.id === markerEl.dataset.marker) : undefined;
+    if (e.button === 2) {
+      openRulerMenu(e, marker);
+      return;
+    }
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const from = rulerTick(e.clientX);
+    const grid = (t: number, ev: PointerEvent) => (ev.altKey ? Math.round(t) : snapRound(t, snap));
+    let moved = false;
+    if (marker) {
+      startDrag(e, {
+        onStart: () => a.beginGesture(),
+        onMove: (dx, _dy, ev) => {
+          if (!moved && Math.abs(dx) < 4) return;
+          moved = true;
+          a.updateMarker(marker.id, { tick: grid(marker.tick + dx / ppt, ev) }, false);
+        },
+        onEnd: () => {
+          a.endGesture();
+          if (!moved) jumpTo(marker.tick);
+        },
+      });
+      return;
+    }
+    startDrag(e, {
+      onMove: (dx, _dy, ev) => {
+        if (!moved && Math.abs(dx) < 4) return;
+        moved = true;
+        a.setSongLoop({ start: grid(from, ev), end: grid(from + dx / ppt, ev) });
+      },
+      onEnd: () => {
+        if (!moved) jumpTo(snapFloor(from, bar));
+      },
+    });
+  };
+
+  const openRulerMenu = (e: React.PointerEvent, marker?: { id: string; tick: number; name: string }) => {
+    if (marker) {
+      const next = markers.find((m) => m.tick > marker.tick);
+      openContextMenu(
+        e,
+        [
+          { label: 'Tocar a partir daqui', action: () => jumpTo(marker.tick) },
+          { label: 'Renomear…', action: () => renameMarker(marker.id, marker.name) },
+          {
+            label: 'Loop até o próximo marcador',
+            action: () => a.setSongLoop({ start: marker.tick, end: next?.tick ?? Math.max(marker.tick + bar, songLength(project)) }),
+          },
+          { label: 'Excluir marcador', danger: true, action: () => a.removeMarker(marker.id) },
+        ],
+        marker.name,
+      );
+      return;
+    }
+    const tick = snapFloor(rulerTick(e.clientX), bar);
+    const barNumber = tick / bar + 1;
+    openContextMenu(
+      e,
+      [
+        {
+          label: `Adicionar marcador no compasso ${barNumber}…`,
+          action: () => {
+            const name = prompt('Nome do marcador', `Marcador ${markers.length + 1}`);
+            if (name !== null) a.addMarker(tick, name.trim() || undefined);
+          },
+        },
+        { label: `Tocar a partir do compasso ${barNumber}`, action: () => jumpTo(tick) },
+        { label: `Loop no compasso ${barNumber}`, action: () => a.setSongLoop({ start: tick, end: tick + bar }) },
+        ...(songLoop ? [{ label: 'Remover região de loop', action: () => a.setSongLoop(null) }] : []),
+      ],
+      'Régua',
     );
   };
 
@@ -354,7 +475,7 @@ export function Playlist() {
           title={`${p.name} — duplo clique abre no Channel Rack`}
         >
           <span className="clip-name" style={{ background: p.color }}>{p.name}</span>
-          <PatternPreview pattern={p} clipLength={clip.length} />
+          <PatternPreview pattern={p} clipLength={clip.length} bar={bar} />
         </div>
       );
     }
@@ -370,7 +491,7 @@ export function Playlist() {
           title={`${channel?.name ?? 'Áudio'} — bordas: cortar · duplo clique: abrir o sampler`}
         >
           <span className="clip-name" style={{ background: AUDIO_COLOR }}>{channel?.name ?? 'Áudio'}</span>
-          <AudioPreview clip={clip} channel={channel} ppt={ppt} spt={spt} />
+          <AudioPreview clip={clip} channel={channel} ppt={ppt} spt={spt} speed={sourceSpeed(channel?.stretch, project.bpm)} />
         </div>
       );
     }
@@ -399,18 +520,34 @@ export function Playlist() {
         <span className="pattern-chip" style={{ background: current.color }}>{current.name}</span>
         <label className="inline-field">
           Grade
-          <select value={snap} onChange={(e) => a.setPlaylistView({ snap: Number(e.target.value) })}>
+          <select value={snapSetting} onChange={(e) => a.setPlaylistView({ snap: Number(e.target.value) })}>
             {SNAP_OPTIONS.map((o) => (
               <option key={o.ticks} value={o.ticks}>{o.label}</option>
             ))}
           </select>
         </label>
+        {songLoop && (
+          <button
+            type="button"
+            className="loop-chip"
+            onClick={() => a.setSongLoop(null)}
+            title="O modo SONG está tocando em loop só esta região. Clique para voltar a tocar a música inteira."
+          >
+            Loop{' '}
+            {songLoop.start % bar === 0 && songLoop.end % bar === 0
+              ? songLoop.end - songLoop.start === bar
+                ? `compasso ${songLoop.start / bar + 1}`
+                : `${songLoop.start / bar + 1}–${songLoop.end / bar}`
+              : `${formatPosition(songLoop.start, project.timeSig)}–${formatPosition(songLoop.end, project.timeSig)}`}{' '}
+            ✕
+          </button>
+        )}
         <label className="inline-field">
           Zoom
           <input type="range" min={0.25} max={4} step={0.05} value={zoom} onChange={(e) => a.setPlaylistView({ zoom: Number(e.target.value) })} />
         </label>
         <span className="hint">
-          Clique: colocar pattern · arrastar: mover · borda: esticar · botão direito: apagar (no nome do clip: menu) · Ctrl+B: duplicar · arraste áudio para criar clips
+          Clique: colocar pattern · arrastar: mover · borda: esticar · botão direito: apagar (no nome do clip: menu) · Ctrl+B: duplicar · arraste áudio para criar clips · régua: clique toca dali, arraste cria loop, botão direito: marcadores
         </span>
       </div>
       <div className="pl-body">
@@ -435,17 +572,27 @@ export function Playlist() {
           <div className="pl-inner" style={{ gridTemplateColumns: `${HEADER_W}px ${width}px`, gridTemplateRows: `${RULER_H}px ${height}px` }}>
             <div className="pl-corner" />
             <div
+              ref={rulerRef}
               className="pl-ruler"
-              onPointerDown={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                const tick = snapFloor((e.clientX - rect.left) / ppt, TICKS_PER_BAR);
-                a.setSongStart(tick);
-                if (engine.isPlaying && mode === 'song') engine.restart();
-              }}
-              title="Clique para definir onde a música começa a tocar"
+              onPointerDown={onRulerPointerDown}
+              onContextMenu={(e) => e.preventDefault()}
+              title="Clique: tocar a partir daqui · arraste: região de loop · botão direito: marcadores"
             >
-              {Array.from({ length: bars }, (_, bar) => (
-                <span key={bar} style={{ left: bar * TICKS_PER_BAR * ppt }}>{bar + 1}</span>
+              {songLoop && <div className="pl-loop" style={{ left: songLoop.start * ppt, width: (songLoop.end - songLoop.start) * ppt }} />}
+              {Array.from({ length: bars }, (_, i) => (
+                <span key={i} style={{ left: i * bar * ppt }}>{i + 1}</span>
+              ))}
+              {markers.map((m) => (
+                <div
+                  key={m.id}
+                  data-marker={m.id}
+                  className="pl-marker"
+                  style={{ left: m.tick * ppt }}
+                  onDoubleClick={() => renameMarker(m.id, m.name)}
+                  title={`${m.name} — clique: tocar daqui · arraste: mover · duplo clique: renomear · botão direito: menu`}
+                >
+                  {m.name}
+                </div>
               ))}
               <div className="song-start" style={{ left: songStart * ppt }} />
             </div>
@@ -497,7 +644,7 @@ export function Playlist() {
               style={{
                 width,
                 height,
-                backgroundSize: `${TICKS_PER_BAR * 8 * ppt}px 100%, ${TICKS_PER_BAR * ppt}px 100%, 100% ${LANE_H}px`,
+                backgroundSize: `${bar * 8 * ppt}px 100%, ${bar * ppt}px 100%, 100% ${LANE_H}px`,
               }}
               onPointerDown={onGridPointerDown}
               onContextMenu={(e) => e.preventDefault()}
@@ -510,6 +657,10 @@ export function Playlist() {
               onDragLeave={() => setDropping(false)}
               onDrop={onDrop}
             >
+              {songLoop && <div className="pl-loop-shade" style={{ left: songLoop.start * ppt, width: (songLoop.end - songLoop.start) * ppt }} />}
+              {markers.map((m) => (
+                <div key={m.id} className="pl-marker-line" style={{ left: m.tick * ppt }} />
+              ))}
               {clips.map(clipView)}
               <div ref={playheadRef} className="playhead" />
             </div>

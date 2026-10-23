@@ -12,8 +12,12 @@ export interface NoteOptions {
   params: ParamValues;
   /** Decoded sample for sample-based instruments. */
   sample?: AudioBuffer;
-  /** Sample-based instruments: seconds into the sample to start from (audio clips). */
+  /** Sample-based instruments: seconds into `sample` to start from (audio clips). */
   offset?: number;
+  /** Sample-based instruments: extra playback-rate factor (time-stretch settings). */
+  rate?: number;
+  /** Fine pitch of this note in cents (piano roll / graph editor). */
+  detune?: number;
   /** Always stop at the release, even in one-shot mode (audio clips end with the clip). */
   gated?: boolean;
   /** Drum Pads: the decoded sample of each pad. */

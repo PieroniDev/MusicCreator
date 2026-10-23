@@ -14,8 +14,10 @@ import { PadsEditor } from './PadsEditor';
 import { slicePoints } from '../plugins/instruments/slicer';
 import { createNote } from '../model/defaults';
 import { secondsPerTick } from '../model/time';
-import type { Channel } from '../model/types';
+import type { Channel, StretchSettings } from '../model/types';
 import { useDecodedSample } from './hooks';
+import { AudioEditor } from './AudioEditor';
+import { guessBpm, STRETCH_PITCH_RANGE, tempoRatio } from '../model/stretch';
 
 function groupParams(params: ParamSpec[]): Array<[string, ParamSpec[]]> {
   const groups = new Map<string, ParamSpec[]>();
@@ -169,6 +171,90 @@ function sliceToPianoRoll(channel: Channel, points: number[], duration: number):
   a.toggleWindow('pianoRoll', true);
 }
 
+/** A number field that commits on Enter or when it loses focus (one undo step per edit). */
+function CommitNumber({ value, onCommit, placeholder, min, max }: { value: number | null; onCommit(v: number | null): void; placeholder?: string; min: number; max: number }) {
+  const [text, setText] = useState<string | null>(null);
+  const commit = () => {
+    if (text === null) return;
+    const v = text.trim() === '' ? null : Number(text.replace(',', '.'));
+    setText(null);
+    if (v === null || (Number.isFinite(v) && v >= min && v <= max)) onCommit(v);
+  };
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      className="commit-number"
+      value={text ?? (value === null ? '' : String(value))}
+      placeholder={placeholder}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        if (e.key === 'Escape') setText(null);
+      }}
+    />
+  );
+}
+
+/** Sampler time-stretch: follow the project tempo and shift the pitch, with or without changing the speed. */
+function StretchPanel({ channel, duration }: { channel: Channel; duration?: number }) {
+  const bpm = useStore((s) => s.project.bpm);
+  const a = actions();
+  const st = channel.stretch;
+  const set = (patch: Partial<StretchSettings>, history = true) =>
+    a.setChannelStretch(channel.id, { mode: 'stretch', pitch: 0, bpm: 0, ...st, ...patch }, history);
+  const ratio = tempoRatio(st, bpm);
+  let info = 'Defina o tempo do sample (ou clique em Detectar) para ele acompanhar o BPM do projeto.';
+  if (st?.bpm) {
+    const beats = duration ? Math.round(((duration * st.bpm) / 60) * 100) / 100 : null;
+    info = `Tocando a ${Math.round(ratio * 1000) / 10}% da velocidade${beats ? ` · ${beats} tempos` : ''}`;
+  }
+  return (
+    <fieldset className="param-group stretch-panel">
+      <legend>Tempo e afinação (time-stretch)</legend>
+      <div className="param-row">
+        <label className="param-select">
+          <span>Modo</span>
+          <select
+            value={st?.mode ?? 'off'}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'off') a.setChannelStretch(channel.id, null);
+              else set({ mode: v as StretchSettings['mode'] });
+            }}
+          >
+            <option value="off">Desligado</option>
+            <option value="resample">Resample (velocidade e afinação juntas)</option>
+            <option value="stretch">Manter afinação (stretch)</option>
+          </select>
+        </label>
+        <Knob
+          value={st?.pitch ?? 0}
+          spec={{ min: -STRETCH_PITCH_RANGE, max: STRETCH_PITCH_RANGE, default: 0, step: 0.01, unit: 'st' }}
+          label="Afinação"
+          color={channel.color}
+          onChange={(v) => set({ pitch: v }, false)}
+        />
+        <label className="param-select" title="O andamento em que o sample foi gravado. Vazio: não acompanha o BPM do projeto.">
+          <span>BPM do sample</span>
+          <CommitNumber value={st?.bpm ? st.bpm : null} min={10} max={999} placeholder="não segue" onCommit={(v) => set({ bpm: v ?? 0 })} />
+        </label>
+        <button
+          type="button"
+          className="text-btn"
+          disabled={!duration}
+          onClick={() => duration && set({ bpm: guessBpm(duration, bpm) })}
+          title="Calcula o tempo pela duração do loop (um número inteiro de compassos)"
+        >
+          Detectar
+        </button>
+        <span className="stretch-info">{info}</span>
+      </div>
+    </fieldset>
+  );
+}
+
 function ChannelEditor({ channelId }: { channelId: string }) {
   const channel = useStore((s) => s.project.channels.find((c) => c.id === channelId));
   const mixer = useStore((s) => s.project.mixer);
@@ -255,12 +341,23 @@ function ChannelEditor({ channelId }: { channelId: string }) {
                 Gerar notas das fatias
               </button>
             )}
+            {channel.sampleId && (
+              <button
+                type="button"
+                className="text-btn"
+                onClick={() => a.openPluginWindow({ kind: 'audio', channelId: channel.id })}
+                title="Cortar, normalizar, fades, reverso..."
+              >
+                Editar áudio…
+              </button>
+            )}
             <button type="button" className="text-btn" onClick={() => void loadSampleFile(channel.id)}>
               Carregar…
             </button>
           </div>
         </div>
       )}
+      {plugin.id === 'sampler' && <StretchPanel channel={channel} duration={buffer?.duration} />}
       {plugin.id === 'pads' ? (
         <PadsEditor channel={channel} />
       ) : (
@@ -312,11 +409,15 @@ export function PluginWindow({ win }: { win: PluginWindowRef & { x: number; y: n
       const c = s.project.channels.find((x) => x.id === win.channelId);
       return c ? `${c.name} · ${getInstrument(c.instrument)?.name ?? ''}` : '';
     }
+    if (win.kind === 'audio') {
+      const c = s.project.channels.find((x) => x.id === win.channelId);
+      return c ? `${c.name} · Editor de áudio` : '';
+    }
     const t = s.project.mixer[win.track];
     const slot = t?.effects.find((e) => e.id === win.slotId);
     return slot ? `${getEffect(slot.plugin)?.name ?? ''} · ${win.track === 0 ? 'Master' : `Insert ${win.track}`}` : '';
   });
-  const accent = useStore((s) => (win.kind === 'channel' ? s.project.channels.find((c) => c.id === win.channelId)?.color : undefined));
+  const accent = useStore((s) => (win.kind !== 'effect' ? s.project.channels.find((c) => c.id === win.channelId)?.color : undefined));
   const a = actions();
   return (
     <Window
@@ -325,12 +426,18 @@ export function PluginWindow({ win }: { win: PluginWindowRef & { x: number; y: n
       y={win.y}
       z={win.z}
       accent={accent}
-      className="plugin-window"
+      className={`plugin-window${win.kind === 'audio' ? ' audio-window' : ''}`}
       onMove={(x, y) => a.movePluginWindow(key, x, y)}
       onFocus={() => a.focusPluginWindow(key)}
       onClose={() => a.closePluginWindow(key)}
     >
-      {win.kind === 'channel' ? <ChannelEditor channelId={win.channelId} /> : <EffectEditor track={win.track} slotId={win.slotId} />}
+      {win.kind === 'channel' ? (
+        <ChannelEditor channelId={win.channelId} />
+      ) : win.kind === 'audio' ? (
+        <AudioEditor channelId={win.channelId} />
+      ) : (
+        <EffectEditor track={win.track} slotId={win.slotId} />
+      )}
     </Window>
   );
 }

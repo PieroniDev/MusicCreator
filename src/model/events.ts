@@ -1,6 +1,7 @@
 import type { Project } from './types';
 import { findPattern, patternLength } from './pattern';
-import { TICKS_PER_STEP } from './time';
+import { barTicks, TICKS_PER_STEP } from './time';
+import { sourceSpeed } from './stretch';
 
 /** A note to be played, positioned on the transport timeline (pattern or song). */
 export interface NoteEvent {
@@ -10,6 +11,14 @@ export interface NoteEvent {
   /** Position in ticks on the timeline being played. */
   start: number;
   length: number;
+  /** Per-note pan and fine pitch (cents), when the note has them. */
+  pan?: number;
+  fine?: number;
+}
+
+/** The optional per-note properties of a note, for its event. */
+function extras(n: { pan?: number; fine?: number }): { pan?: number; fine?: number } {
+  return n.pan || n.fine ? { ...(n.pan ? { pan: n.pan } : {}), ...(n.fine ? { fine: n.fine } : {}) } : {};
 }
 
 /**
@@ -18,14 +27,14 @@ export interface NoteEvent {
 export function patternEvents(project: Project, patternId: string, from: number, to: number): NoteEvent[] {
   const pattern = findPattern(project, patternId);
   if (!pattern || to <= from) return [];
-  const length = patternLength(pattern);
+  const length = patternLength(pattern, barTicks(project.timeSig));
   const out: NoteEvent[] = [];
   for (const channel of project.channels) {
     const notes = pattern.notes[channel.id];
     if (!notes) continue;
     for (const n of notes) {
       if (n.start >= from && n.start < to && n.start < length) {
-        out.push({ channelId: channel.id, key: n.key, velocity: n.velocity, start: n.start, length: n.length });
+        out.push({ channelId: channel.id, key: n.key, velocity: n.velocity, start: n.start, length: n.length, ...extras(n) });
       }
     }
   }
@@ -40,6 +49,7 @@ export function patternEvents(project: Project, patternId: string, from: number,
 export function songEvents(project: Project, from: number, to: number): NoteEvent[] {
   if (to <= from) return [];
   const channelIds = new Set(project.channels.map((c) => c.id));
+  const bar = barTicks(project.timeSig);
   const out: NoteEvent[] = [];
   for (const clip of project.playlist.clips) {
     const clipEnd = clip.start + clip.length;
@@ -47,7 +57,7 @@ export function songEvents(project: Project, from: number, to: number): NoteEven
     if (clip.kind !== 'pattern' || project.playlist.tracks[clip.track]?.mute) continue;
     const pattern = findPattern(project, clip.patternId);
     if (!pattern) continue;
-    const length = patternLength(pattern);
+    const length = patternLength(pattern, bar);
     const firstRep = Math.max(0, Math.floor((from - clip.start) / length));
     const lastRep = Math.floor((Math.min(to, clipEnd) - clip.start) / length);
     for (const [channelId, notes] of Object.entries(pattern.notes)) {
@@ -64,6 +74,7 @@ export function songEvents(project: Project, from: number, to: number): NoteEven
             velocity: n.velocity,
             start,
             length: Math.min(n.length, clipEnd - start),
+            ...extras(n),
           });
         }
       }
@@ -105,22 +116,26 @@ export interface AudioEvent {
   /** Song position in ticks. */
   start: number;
   length: number;
-  /** Seconds into the sample where playback starts. */
+  /** Seconds into the original sample where playback starts. */
   sampleOffset: number;
+  /** Seconds of the original sample per second of playback (time-stretch, see model/stretch). */
+  speed: number;
 }
 
-function audibleAudioClips(project: Project) {
-  const channelIds = new Set(project.channels.map((c) => c.id));
-  return project.playlist.clips.filter(
-    (c) => c.kind === 'audio' && channelIds.has(c.channelId) && !project.playlist.tracks[c.track]?.mute,
-  ) as Array<Extract<Project['playlist']['clips'][number], { kind: 'audio' }>>;
+type AudioClipOf = Extract<Project['playlist']['clips'][number], { kind: 'audio' }>;
+
+function audibleAudioClips(project: Project): Array<{ clip: AudioClipOf; speed: number }> {
+  const speeds = new Map(project.channels.map((c) => [c.id, sourceSpeed(c.stretch, project.bpm)]));
+  return project.playlist.clips
+    .filter((c): c is AudioClipOf => c.kind === 'audio' && speeds.has(c.channelId) && !project.playlist.tracks[c.track]?.mute)
+    .map((clip) => ({ clip, speed: speeds.get(clip.channelId)! }));
 }
 
 /** Audio clips starting in [from, to). */
 export function songAudioEvents(project: Project, from: number, to: number): AudioEvent[] {
   return audibleAudioClips(project)
-    .filter((c) => c.start >= from && c.start < to)
-    .map((c) => ({ channelId: c.channelId, start: c.start, length: c.length, sampleOffset: c.offset }))
+    .filter(({ clip: c }) => c.start >= from && c.start < to)
+    .map(({ clip: c, speed }) => ({ channelId: c.channelId, start: c.start, length: c.length, sampleOffset: c.offset, speed }))
     .sort((a, b) => a.start - b.start);
 }
 
@@ -130,8 +145,15 @@ export function songAudioEvents(project: Project, from: number, to: number): Aud
  */
 export function audioClipsAt(project: Project, position: number): Array<AudioEvent & { elapsed: number }> {
   return audibleAudioClips(project)
-    .filter((c) => c.start < position && position < c.start + c.length)
-    .map((c) => ({ channelId: c.channelId, start: c.start, length: c.length, sampleOffset: c.offset, elapsed: position - c.start }));
+    .filter(({ clip: c }) => c.start < position && position < c.start + c.length)
+    .map(({ clip: c, speed }) => ({
+      channelId: c.channelId,
+      start: c.start,
+      length: c.length,
+      sampleOffset: c.offset,
+      speed,
+      elapsed: position - c.start,
+    }));
 }
 
 /**

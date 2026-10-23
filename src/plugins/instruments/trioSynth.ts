@@ -68,7 +68,7 @@ export const trioSynth: InstrumentPlugin = {
     },
   ],
 
-  noteOn(ctx, destination, { key, velocity, time, params: values }) {
+  noteOn(ctx, destination, { key, velocity, time, params: values, detune = 0 }) {
     const p = paramReader(params, values);
     const voice = new NodeVoice(ctx, destination);
 
@@ -81,7 +81,7 @@ export const trioSynth: InstrumentPlugin = {
     filter.connect(amp);
     amp.connect(voice.out);
 
-    const baseFreq = keyToFrequency(key);
+    const baseFreq = keyToFrequency(key + detune / 100);
     const unison = Math.max(1, Math.round(p('unison')));
     const spread = p('spread');
     for (let n = 1; n <= 3; n++) {

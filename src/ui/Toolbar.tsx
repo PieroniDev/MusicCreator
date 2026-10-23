@@ -1,14 +1,14 @@
 import { useRef } from 'react';
 import { actions, selectedPattern, useStore, type WindowId } from '../state/store';
 import { engine } from '../audio/engine';
-import { formatPosition } from '../model/time';
+import { BEAT_UNITS, formatPosition, formatTimeSig, MAX_BEATS } from '../model/time';
 import { DragNumber, IconButton } from './controls';
 import { usePlayheadFrame, usePlaying } from './hooks';
 import { confirmDiscard, exportMidi, importMidi, newProject, openProject, saveProject } from './fileOps';
 import { openContextMenu } from './ContextMenu';
 import { runExport, useExportProgress } from './exporter';
 import { enableMidi, useMidi } from '../audio/midi';
-import { useRecorder } from '../audio/recorder';
+import { refreshInputs, setInput, setMonitor, useRecorder } from '../audio/recorder';
 
 const WINDOW_BUTTONS: Array<{ id: WindowId; label: string; key: string; name?: string }> = [
   { id: 'playlist', label: 'Playlist', key: 'F5' },
@@ -21,13 +21,78 @@ function TimeDisplay() {
   const ref = useRef<HTMLDivElement>(null);
   const songStart = useStore((s) => s.ui.songStart);
   const mode = useStore((s) => s.ui.mode);
+  const sig = useStore((s) => s.project.timeSig);
   usePlayheadFrame((pos) => {
-    if (ref.current) ref.current.textContent = formatPosition(pos ?? (mode === 'song' ? songStart : 0));
+    if (ref.current) ref.current.textContent = formatPosition(pos ?? (mode === 'song' ? songStart : 0), sig);
   });
   return (
     <div className="time-display" ref={ref} title="Posição (compasso:tempo:passo)">
-      {formatPosition(mode === 'song' ? songStart : 0)}
+      {formatPosition(mode === 'song' ? songStart : 0, sig)}
     </div>
+  );
+}
+
+/** While tempo automation plays, the tempo heard right now (next to the project tempo). */
+function LiveTempo({ bpm }: { bpm: number }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  usePlayheadFrame((pos) => {
+    const el = ref.current;
+    if (!el) return;
+    const live = pos === null ? bpm : engine.tempo;
+    el.textContent = Math.abs(live - bpm) > 0.005 ? `→ ${live.toFixed(1)}` : '';
+  });
+  return <span ref={ref} className="bpm-live" title="Andamento atual (automação)" />;
+}
+
+const COMMON_SIGNATURES: Array<[number, number]> = [
+  [2, 4],
+  [3, 4],
+  [4, 4],
+  [5, 4],
+  [6, 4],
+  [7, 4],
+  [6, 8],
+  [7, 8],
+  [9, 8],
+  [12, 8],
+];
+
+/** Time signature of the project (bars in the playlist, piano roll, rack and metronome follow it). */
+function TimeSignatureButton() {
+  const sig = useStore((s) => s.project.timeSig);
+  const current = formatTimeSig(sig);
+  return (
+    <button
+      type="button"
+      className="time-sig"
+      title="Fórmula de compasso"
+      onClick={(e) =>
+        openContextMenu(
+          e,
+          [
+            ...COMMON_SIGNATURES.map(([b, u]) => ({
+              label: `${current === `${b}/${u}` ? '✓ ' : ''}${b}/${u}`,
+              action: () => actions().setTimeSignature(b, u),
+            })),
+            {
+              label: 'Outra…',
+              action: () => {
+                const text = prompt(`Fórmula de compasso (tempos/figura, ex.: 11/8). Tempos: 1 a ${MAX_BEATS}; figura: ${BEAT_UNITS.join(', ')}`, current);
+                const m = text?.match(/^\s*(\d+)\s*\/\s*(\d+)\s*$/);
+                if (!m) return;
+                const beats = Number(m[1]);
+                const unit = Number(m[2]);
+                if (beats >= 1 && beats <= MAX_BEATS && BEAT_UNITS.includes(unit)) actions().setTimeSignature(beats, unit);
+                else alert('Fórmula inválida.');
+              },
+            },
+          ],
+          'Fórmula de compasso',
+        )
+      }
+    >
+      {current}
+    </button>
   );
 }
 
@@ -116,22 +181,33 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
           type="button"
           className={`rec-btn${recording ? ' armed' : ''}${recorder.state === 'recording' ? ' live' : ''}`}
           onClick={() => actions().toggleRecording()}
-          onContextMenu={(e) =>
+          onContextMenu={(e) => {
+            void refreshInputs();
+            const check = (on: boolean) => (on ? '✓ ' : '');
             openContextMenu(
               e,
               [
-                { label: `${recordMode === 'notes' ? '✓ ' : ''}Gravar notas (teclado / MIDI, modo PAT)`, action: () => actions().setRecordMode('notes') },
+                { label: `${check(recordMode === 'notes')}Gravar notas (teclado / MIDI, modo PAT)`, action: () => actions().setRecordMode('notes') },
                 {
-                  label: `${recordMode === 'audio' ? '✓ ' : ''}Gravar áudio (microfone / interface, modo SONG)`,
+                  label: `${check(recordMode === 'audio')}Gravar áudio (microfone / interface, modo SONG)`,
                   action: () => {
                     actions().setRecordMode('audio');
                     actions().setMode('song');
                   },
                 },
+                {
+                  label: `${check(recorder.monitor)}Ouvir a entrada pelo master (use fones)`,
+                  action: () => setMonitor(!recorder.monitor),
+                },
+                { label: `${check(recorder.inputId === null)}Entrada: padrão do sistema`, action: () => setInput(null) },
+                ...recorder.inputs.map((input) => ({
+                  label: `${check(recorder.inputId === input.id)}Entrada: ${input.label}`,
+                  action: () => setInput(input.id),
+                })),
               ],
               'Gravação',
-            )
-          }
+            );
+          }}
           title={
             recordMode === 'audio'
               ? recording
@@ -171,7 +247,24 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
           MIDI{midi.state === 'on' ? ` ${midi.inputs.length}` : ''}
         </IconButton>
         <TimeDisplay />
-        <div className="bpm" title="Andamento: arraste para cima/baixo ou dê duplo clique para digitar">
+        <div
+          className="bpm"
+          title="Andamento: arraste para cima/baixo ou dê duplo clique para digitar · botão direito: automação"
+          onContextMenu={(e) =>
+            openContextMenu(
+              e,
+              [
+                {
+                  label: 'Criar clip de automação do andamento',
+                  action: () => {
+                    if (actions().addAutomationClip({ kind: 'tempo' })) actions().toggleWindow('playlist', true);
+                  },
+                },
+              ],
+              'Andamento',
+            )
+          }
+        >
           <DragNumber
             value={bpm}
             min={20}
@@ -181,7 +274,9 @@ export function Toolbar({ onResetLayout }: { onResetLayout(): void }) {
             format={(v) => v.toFixed(v % 1 ? 2 : 0)}
           />
           <span>BPM</span>
+          <LiveTempo bpm={bpm} />
         </div>
+        <TimeSignatureButton />
       </div>
 
       <div className="tool-group">

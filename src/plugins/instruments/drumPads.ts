@@ -31,7 +31,7 @@ export const drumPads: InstrumentPlugin = {
   presets: [{ name: 'Inicial', params: {} }],
   defaultRootKey: FIRST_PAD_KEY,
 
-  noteOn(ctx, destination, { key, velocity, time, params: values, pads }) {
+  noteOn(ctx, destination, { key, velocity, time, params: values, pads, detune = 0 }) {
     const p = paramReader(params, values);
     const voice = new NodeVoice(ctx, destination);
     const pad = padForKey(key);
@@ -43,7 +43,7 @@ export const drumPads: InstrumentPlugin = {
     }
     const src = voice.source(ctx.createBufferSource());
     src.buffer = buffer;
-    src.playbackRate.value = Math.pow(2, p(`pad${pad}Tune`) / 12);
+    src.playbackRate.value = Math.pow(2, (p(`pad${pad}Tune`) + detune / 100) / 12);
     const pan = voice.node(ctx.createStereoPanner());
     pan.pan.value = p(`pad${pad}Pan`);
     const gain = voice.node(ctx.createGain());

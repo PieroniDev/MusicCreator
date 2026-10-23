@@ -130,3 +130,42 @@ describe('drum pads in project files', () => {
     expect(parsed.channels[1].pads).toBeUndefined();
   });
 });
+
+describe('markers and time-stretch in project files', () => {
+  it('keeps valid markers sorted and repairs bad ones', () => {
+    const demo = createDemoProject();
+    const raw = JSON.parse(serializeProject(demo));
+    raw.playlist.markers = [
+      { id: 'b', tick: 768, name: 'Refrão' },
+      { id: 'a', tick: -20, name: '' },
+      'junk',
+    ];
+    const parsed = parseProject(raw);
+    expect(parsed.playlist.markers).toEqual([
+      { id: 'a', tick: 0, name: 'Marcador' },
+      { id: 'b', tick: 768, name: 'Refrão' },
+    ]);
+    expect(parseProject(JSON.parse(serializeProject(parsed)))).toEqual(parsed);
+  });
+
+  it('round-trips stretch settings and clamps them', () => {
+    const demo = createDemoProject();
+    const raw = JSON.parse(serializeProject(demo));
+    raw.channels[0].stretch = { mode: 'resample', pitch: 99, bpm: 128 };
+    raw.channels[1].stretch = { mode: 'whatever', pitch: -3, bpm: 0 };
+    raw.channels[2].stretch = 'nope';
+    const parsed = parseProject(raw);
+    expect(parsed.channels[0].stretch).toEqual({ mode: 'resample', pitch: 24, bpm: 128 });
+    expect(parsed.channels[1].stretch).toEqual({ mode: 'stretch', pitch: -3, bpm: 0 });
+    expect('stretch' in parsed.channels[2]).toBe(false);
+  });
+});
+
+describe('time signature in project files', () => {
+  it('keeps valid signatures and drops 4/4 and invalid units', () => {
+    const raw = JSON.parse(serializeProject(createDemoProject()));
+    expect(parseProject({ ...raw, timeSig: { beats: 7, beatUnit: 8 } }).timeSig).toEqual({ beats: 7, beatUnit: 8 });
+    expect('timeSig' in parseProject({ ...raw, timeSig: { beats: 4, beatUnit: 4 } })).toBe(false);
+    expect(parseProject({ ...raw, timeSig: { beats: 99, beatUnit: 3 } }).timeSig).toEqual({ beats: 16, beatUnit: 4 });
+  });
+});

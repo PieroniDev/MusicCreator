@@ -4,6 +4,17 @@ import { getEffect, getInstrument } from '../plugins/registry';
 import { disconnectAll } from '../plugins/dsp';
 import { targetKey, type AutomatedValue } from '../model/automation';
 import { decodeSample, getDecodedSample } from './samples';
+import { getStretched } from './stretch';
+import { sourceSpeed, stretchFactor } from '../model/stretch';
+
+/** The buffer a sample-based channel plays, how fast, and how original seconds map into it. */
+interface ResolvedSample {
+  buffer?: AudioBuffer;
+  /** playbackRate multiplier. */
+  rate: number;
+  /** Buffer seconds per second of the original sample. */
+  scale: number;
+}
 
 interface ChannelStrip {
   channel: Channel;
@@ -60,6 +71,8 @@ export class AudioGraph {
   /** Context time of a beat on the song grid, for tempo-synced effects (null when stopped). */
   private beatAnchor: number | null = null;
   private bpm = 120;
+  /** Tempo set by tempo automation while the song plays (null: the project tempo). */
+  private tempoOverride: number | null = null;
   private project?: Project;
 
   constructor(
@@ -70,12 +83,16 @@ export class AudioGraph {
   sync(project: Project): void {
     const prev = this.project;
     this.project = project;
-    const tempoChanged = project.bpm !== this.bpm;
-    this.bpm = project.bpm;
+    const bpm = this.tempoOverride ?? project.bpm;
+    const tempoChanged = bpm !== this.bpm;
+    this.bpm = bpm;
 
     if (!prev || prev.mixer !== project.mixer || tempoChanged) this.syncMixer(project, tempoChanged);
     if (!prev || prev.channels !== project.channels || prev.mixer.length !== project.mixer.length) this.syncChannels(project);
     if (!prev || prev.samples !== project.samples) this.loadSamples(project);
+    if (!prev || prev.channels !== project.channels || tempoChanged) {
+      for (const c of project.channels) if (c.stretch) this.resolveSample(c);
+    }
   }
 
   /** Decodes every sample the project uses; resolves when all are ready. */
@@ -86,48 +103,91 @@ export class AudioGraph {
 
   /**
    * Plays a note on a channel. `params` overrides some instrument params for
-   * this note only (automation at the note's start).
+   * this note only (automation at the note's start); `note` carries the
+   * note's own pan and fine pitch.
    */
-  playNote(channelId: string, key: number, velocity: number, time: number, duration?: number, params?: ParamValues): Voice | null {
+  playNote(
+    channelId: string,
+    key: number,
+    velocity: number,
+    time: number,
+    duration?: number,
+    params?: ParamValues,
+    note?: { pan?: number; fine?: number },
+  ): Voice | null {
     const strip = this.channels.get(channelId);
     if (!strip) return null;
     const channel = strip.channel;
     const plugin = getInstrument(channel.instrument);
     if (!plugin) return null;
-    const voice = plugin.noteOn(this.ctx, strip.input, {
+    const resolved = this.resolveSample(channel);
+    // A panned note gets its own panner in front of the channel.
+    let destination: AudioNode = strip.input;
+    let panner: StereoPannerNode | null = null;
+    if (note?.pan) {
+      panner = this.ctx.createStereoPanner();
+      panner.pan.value = note.pan;
+      panner.connect(strip.input);
+      destination = panner;
+    }
+    const voice = plugin.noteOn(this.ctx, destination, {
       key,
       velocity,
       time,
       rootKey: channel.rootKey,
       params: params ? { ...channel.params, ...params } : channel.params,
-      sample: getDecodedSample(channel.sampleId),
+      sample: resolved.buffer,
+      rate: resolved.rate,
+      detune: note?.fine,
       pads: channel.pads?.map((id) => getDecodedSample(id ?? undefined)),
     });
-    this.track(voice);
+    this.track(voice, panner ? () => panner.disconnect() : undefined);
     if (duration !== undefined) voice.release(time + duration);
     return voice;
   }
 
-  /** Plays an audio clip: the channel's sample from `offset` seconds, for `duration` seconds. */
+  /**
+   * Plays an audio clip: the channel's sample from `offset` seconds of the
+   * original audio, for `duration` seconds of output.
+   */
   playClip(channelId: string, time: number, offset: number, duration: number, params?: ParamValues): Voice | null {
     const strip = this.channels.get(channelId);
     const channel = strip?.channel;
     const plugin = channel && getInstrument(channel.instrument);
-    const sample = getDecodedSample(channel?.sampleId);
-    if (!strip || !channel || !plugin?.usesSample || !sample) return null;
+    if (!strip || !channel || !plugin?.usesSample) return null;
+    const { buffer, rate, scale } = this.resolveSample(channel);
+    if (!buffer) return null;
     const voice = plugin.noteOn(this.ctx, strip.input, {
       key: channel.rootKey,
       velocity: 1,
       time,
       rootKey: channel.rootKey,
       params: params ? { ...channel.params, ...params } : channel.params,
-      sample,
-      offset,
+      sample: buffer,
+      rate,
+      offset: offset * scale,
       gated: true,
     });
     this.track(voice);
     voice.release(time + duration);
     return voice;
+  }
+
+  /**
+   * Applies the channel's time-stretch settings. While a stretched buffer is
+   * still being computed the original plays at the right speed (timing stays
+   * correct, only the pitch is off until it is ready).
+   */
+  private resolveSample(channel: Channel): ResolvedSample {
+    const original = getDecodedSample(channel.sampleId);
+    const st = channel.instrument === 'sampler' ? channel.stretch : undefined;
+    if (!original || !st || !channel.sampleId) return { buffer: original, rate: 1, scale: 1 };
+    const speed = sourceSpeed(st, this.bpm);
+    const factor = stretchFactor(st, this.bpm);
+    if (st.mode === 'resample') return { buffer: original, rate: speed, scale: 1 };
+    if (factor === 1) return { buffer: original, rate: Math.pow(2, st.pitch / 12), scale: 1 };
+    const stretched = getStretched(channel.sampleId, original, factor);
+    return stretched ? { buffer: stretched, rate: Math.pow(2, st.pitch / 12), scale: factor } : { buffer: original, rate: speed, scale: 1 };
   }
 
   isChannelAudible(channelId: string): boolean {
@@ -156,10 +216,26 @@ export class AudioGraph {
     }
   }
 
+  /**
+   * Tempo automation: tempo-synced effects (delays, gates) and time-stretched
+   * samples follow `bpm`; null goes back to the project tempo.
+   */
+  setTempo(bpm: number | null): void {
+    this.tempoOverride = bpm;
+    const next = bpm ?? this.project?.bpm ?? this.bpm;
+    if (next === this.bpm) return;
+    this.bpm = next;
+    for (const strip of this.mixer) for (const fx of strip.effects.values()) fx.instance.setTempo?.(next, fx.slot.params);
+  }
+
   /** Lines tempo-synced effects (gates, pumps) up with the song's beats. */
   setBeatAnchor(beatTime: number): void {
     this.beatAnchor = beatTime;
     for (const strip of this.mixer) for (const fx of strip.effects.values()) fx.instance.syncBeat?.(beatTime);
+  }
+
+  get masterInput(): AudioNode | null {
+    return this.mixer[0]?.input ?? null;
   }
 
   /** Peak level (0..) of a mixer track's left and right channels since the last call. */
@@ -187,9 +263,12 @@ export class AudioGraph {
     this.mixer.length = 0;
   }
 
-  private track(voice: Voice): void {
+  private track(voice: Voice, cleanup?: () => void): void {
     this.voices.add(voice);
-    voice.onEnded = () => this.voices.delete(voice);
+    voice.onEnded = () => {
+      this.voices.delete(voice);
+      cleanup?.();
+    };
   }
 
   /** The automated value of a target, if it is automated right now. */
@@ -228,6 +307,8 @@ export class AudioGraph {
         return;
       }
       case 'instrument':
+      case 'tempo':
+        // Applied per note (instruments) and by the transport (tempo).
         return;
     }
   }

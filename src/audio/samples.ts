@@ -36,6 +36,12 @@ export function getDecodedSample(id: string | undefined): AudioBuffer | undefine
   return id ? decoded.get(id) : undefined;
 }
 
+/** Registers audio that is already decoded (e.g. the result of an edit) under an asset id. */
+export function primeDecodedSample(id: string, buffer: AudioBuffer): void {
+  decoded.set(id, buffer);
+  for (const l of listeners) l();
+}
+
 export function decodeSample(ctx: BaseAudioContext, asset: SampleAsset): Promise<AudioBuffer | undefined> {
   const done = decoded.get(asset.id);
   if (done) return Promise.resolve(done);

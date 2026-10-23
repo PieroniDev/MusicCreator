@@ -3,7 +3,7 @@ import type { Channel, Note, Pattern } from '../model/types';
 import { actions, selectedChannel, selectedPattern, useStore } from '../state/store';
 import { patternLength } from '../model/pattern';
 import { createNote } from '../model/defaults';
-import { isBlackKey, keyName, snapFloor, snapRound, TICKS_PER_BAR, TICKS_PER_STEP, PPQ } from '../model/time';
+import { barTicks, beatTicks, isBlackKey, keyName, resolveSnap, SNAP_BAR, snapFloor, snapRound, TICKS_PER_STEP } from '../model/time';
 import { engine } from '../audio/engine';
 import type { Voice } from '../plugins/types';
 import { startDrag } from './controls';
@@ -19,6 +19,35 @@ const ROW_H = 14;
 const KEYS_W = 64;
 const RULER_H = 22;
 const VELOCITY_H = 72;
+
+/** Note properties the event lane under the piano roll edits. */
+type EventLane = 'velocity' | 'pan' | 'fine';
+const LANES: Array<{ id: EventLane; label: string }> = [
+  { id: 'velocity', label: 'Velocity' },
+  { id: 'pan', label: 'Pan' },
+  { id: 'fine', label: 'Afinação fina' },
+];
+
+/** A note's value in a lane, as 0..1 from the bottom of the lane. */
+function laneNorm(n: Note, lane: EventLane): number {
+  if (lane === 'velocity') return n.velocity;
+  if (lane === 'pan') return ((n.pan ?? 0) + 1) / 2;
+  return ((n.fine ?? 0) + 100) / 200;
+}
+
+/** The note patch for a position (0..1 from the bottom) in a lane; the centre snaps to zero. */
+function lanePatch(norm: number, lane: EventLane): Partial<Note> {
+  const x = Math.min(1, Math.max(0, norm));
+  if (lane === 'velocity') return { velocity: Math.max(0.01, x) };
+  const bipolar = Math.abs(x * 2 - 1) < 0.04 ? 0 : x * 2 - 1;
+  return lane === 'pan' ? { pan: bipolar } : { fine: Math.round(bipolar * 100) };
+}
+
+function laneText(n: Note): string {
+  const pan = n.pan ? ` · pan ${Math.round(Math.abs(n.pan) * 100)}% ${n.pan < 0 ? 'E' : 'D'}` : '';
+  const fine = n.fine ? ` · ${n.fine > 0 ? '+' : ''}${n.fine} ct` : '';
+  return `vel. ${Math.round(n.velocity * 100)}%${pan}${fine}`;
+}
 const KEY_COUNT = 128;
 const BASE_PPT = 0.75;
 const EDGE_PX = 6;
@@ -33,7 +62,7 @@ export const SNAP_OPTIONS: Array<{ label: string; ticks: number }> = [
   { label: '1/8 tercina', ticks: 32 },
   { label: '1/2 tempo (1/8)', ticks: 48 },
   { label: 'Tempo (1/4)', ticks: 96 },
-  { label: 'Compasso', ticks: 384 },
+  { label: 'Compasso', ticks: SNAP_BAR },
 ];
 
 const keyY = (key: number) => (KEY_COUNT - 1 - key) * ROW_H;
@@ -134,6 +163,7 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, scaleRoot, sc
   const scrollRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const velRef = useRef<HTMLDivElement>(null);
+  const [lane, setLane] = useState<EventLane>('velocity');
   const playheadRef = useRef<HTMLDivElement>(null);
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [marquee, setMarquee] = useState<Marquee | null>(null);
@@ -142,12 +172,15 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, scaleRoot, sc
   const pasteShift = useRef(0);
 
   const notes = pattern.notes[channel.id] ?? [];
+  const sig = useStore((s) => s.project.timeSig);
+  const bar = barTicks(sig);
+  const beat = beatTicks(sig);
   const ppt = BASE_PPT * zoom;
-  const length = patternLength(pattern);
-  const totalTicks = length + TICKS_PER_BAR * 2;
+  const length = patternLength(pattern, bar);
+  const totalTicks = length + bar * 2;
   const width = totalTicks * ppt;
   const height = KEY_COUNT * ROW_H;
-  const snapTicks = Math.max(1, snap);
+  const snapTicks = resolveSnap(snap, sig);
 
   const ghosts = useMemo(
     () =>
@@ -220,7 +253,7 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, scaleRoot, sc
         const span = Math.ceil((end - start) / sn) * sn;
         if (e.key.toLowerCase() === 'b') pasteShift.current = span;
         else pasteShift.current += span;
-        const copies = source.map((n) => createNote(n.key, n.start + pasteShift.current, n.length, n.velocity));
+        const copies = source.map((n) => ({ ...n, ...createNote(n.key, n.start + pasteShift.current, n.length, n.velocity) }));
         a.addNotes(p.id, c.id, copies);
         setSelection(new Set(copies.map((n) => n.id)));
         if (e.key.toLowerCase() === 'b') clipboard.current = copies;
@@ -416,18 +449,21 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, scaleRoot, sc
     );
   };
 
+  /** Event lane: drag over the notes to draw their values; the right button resets them. */
   const onVelocityPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 && e.button !== 2) return;
     e.preventDefault();
     setActiveScope('pianoRoll');
     const el = velRef.current!;
+    const reset = e.button === 2;
     const apply = (clientX: number, clientY: number) => {
       const rect = el.getBoundingClientRect();
       const x = clientX - rect.left + el.scrollLeft;
-      const v = Math.min(1, Math.max(0.01, 1 - (clientY - rect.top) / VELOCITY_H));
+      const norm = reset ? (lane === 'velocity' ? 0.78 : 0.5) : 1 - (clientY - rect.top - 4) / VELOCITY_H;
+      const patch = lanePatch(norm, lane);
       const hit = notes.filter((n) => Math.abs(n.start * ppt - x) <= 5);
       const targets = hit.some((n) => selection.has(n.id)) ? hit.filter((n) => selection.has(n.id)) : hit;
-      if (targets.length) a.updateNotes(pattern.id, channel.id, Object.fromEntries(targets.map((n) => [n.id, { velocity: v }])));
+      if (targets.length) a.updateNotes(pattern.id, channel.id, Object.fromEntries(targets.map((n) => [n.id, patch])));
     };
     apply(e.clientX, e.clientY);
     startDrag(e, { onStart: () => a.beginGesture(), onMove: (_dx, _dy, ev) => apply(ev.clientX, ev.clientY), onEnd: () => a.endGesture() });
@@ -436,7 +472,7 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, scaleRoot, sc
   const gridStyle = {
     width,
     height,
-    backgroundSize: `${TICKS_PER_BAR * 2 * ppt}px 100%, ${TICKS_PER_BAR * ppt}px 100%, ${PPQ * ppt}px 100%, ${TICKS_PER_STEP * ppt}px 100%`,
+    backgroundSize: `${bar * 2 * ppt}px 100%, ${bar * ppt}px 100%, ${beat * ppt}px 100%, ${TICKS_PER_STEP * ppt}px 100%`,
   };
 
   return (
@@ -503,9 +539,9 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, scaleRoot, sc
         <div className="pr-inner" style={{ gridTemplateColumns: `${KEYS_W}px ${width}px`, gridTemplateRows: `${RULER_H}px ${height}px` }}>
           <div className="pr-corner" />
           <div className="pr-ruler">
-            {Array.from({ length: Math.ceil(totalTicks / TICKS_PER_BAR) }, (_, bar) => (
-              <span key={bar} style={{ left: bar * TICKS_PER_BAR * ppt }} className={bar * TICKS_PER_BAR >= length ? 'outside' : ''}>
-                {bar + 1}
+            {Array.from({ length: Math.ceil(totalTicks / bar) }, (_, i) => (
+              <span key={i} style={{ left: i * bar * ppt }} className={i * bar >= length ? 'outside' : ''}>
+                {i + 1}
               </span>
             ))}
             <div className="pr-length-marker" style={{ left: length * ppt }} title="Fim do pattern" />
@@ -534,7 +570,7 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, scaleRoot, sc
                   background: channel.color,
                   opacity: 0.55 + n.velocity * 0.45,
                 }}
-                title={`${keyName(n.key)} · vel. ${Math.round(n.velocity * 100)}%`}
+                title={`${keyName(n.key)} · ${laneText(n)}`}
               >
                 {n.length * ppt > 26 && <span>{keyName(n.key)}</span>}
               </div>
@@ -555,16 +591,45 @@ function PianoRollEditor({ pattern, channel, channels, snap, zoom, scaleRoot, sc
         </div>
       </div>
       <div className="pr-velocity-wrap">
-        <div className="pr-velocity-label">Vel.</div>
-        <div className="pr-velocity" ref={velRef} onPointerDown={onVelocityPointerDown}>
-          <div style={{ width, height: VELOCITY_H, position: 'relative' }}>
-            {notes.map((n) => (
-              <div
-                key={n.id}
-                className={`vel-bar${selection.has(n.id) ? ' selected' : ''}`}
-                style={{ left: n.start * ppt, height: n.velocity * VELOCITY_H, background: channel.color }}
-              />
+        <div className="pr-velocity-label">
+          <select value={lane} onChange={(e) => setLane(e.target.value as EventLane)} title="Propriedade das notas editada nesta faixa">
+            {LANES.map((l) => (
+              <option key={l.id} value={l.id}>{l.label}</option>
             ))}
+          </select>
+        </div>
+        <div
+          className="pr-velocity"
+          ref={velRef}
+          onPointerDown={onVelocityPointerDown}
+          onContextMenu={(e) => e.preventDefault()}
+          title="Arraste sobre as notas para desenhar os valores · botão direito: valor padrão"
+        >
+          <div style={{ width, height: VELOCITY_H, position: 'relative' }}>
+            {lane !== 'velocity' && <div className="ev-center" />}
+            {notes.map((n) => {
+              const v = laneNorm(n, lane);
+              if (lane === 'velocity') {
+                return (
+                  <div
+                    key={n.id}
+                    className={`vel-bar${selection.has(n.id) ? ' selected' : ''}`}
+                    style={{ left: n.start * ppt, height: v * VELOCITY_H, background: channel.color }}
+                  />
+                );
+              }
+              const y = (1 - v) * VELOCITY_H;
+              const mid = VELOCITY_H / 2;
+              return (
+                <div key={n.id}>
+                  <div
+                    className={`ev-bar${selection.has(n.id) ? ' selected' : ''}`}
+                    style={{ left: n.start * ppt, top: Math.min(y, mid), height: Math.max(1, Math.abs(y - mid)), background: channel.color }}
+                  />
+                  <div className="ev-dot" style={{ left: n.start * ppt - 2, top: y - 3, background: channel.color }} />
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

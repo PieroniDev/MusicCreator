@@ -102,7 +102,7 @@ describe('audio clips and swing', () => {
     const { p, channelId } = project();
     p.playlist.clips = [{ id: 'a1', kind: 'audio', channelId, track: 1, start: 96, length: 192, offset: 0.5 }];
     expect(songAudioEvents(p, 0, 96)).toHaveLength(0);
-    expect(songAudioEvents(p, 0, 97)).toEqual([{ channelId, start: 96, length: 192, sampleOffset: 0.5 }]);
+    expect(songAudioEvents(p, 0, 97)).toEqual([{ channelId, start: 96, length: 192, sampleOffset: 0.5, speed: 1 }]);
     expect(audioClipsAt(p, 96)).toHaveLength(0);
     expect(audioClipsAt(p, 100)[0].elapsed).toBe(4);
     p.playlist.tracks[1].mute = true;
@@ -117,5 +117,21 @@ describe('audio clips and swing', () => {
     expect(swingDelay(TICKS_PER_STEP * 2, 1)).toBe(0);
     expect(swingDelay(TICKS_PER_STEP + 3, 1)).toBe(0);
     expect(swingDelay(TICKS_PER_STEP, 0)).toBe(0);
+  });
+});
+
+describe('per-note pan and fine pitch', () => {
+  it('reach the events of patterns and of the song only when set', () => {
+    const { p, patternId, channelId } = project();
+    const notes = p.patterns[0].notes[channelId];
+    notes[0].pan = -0.5;
+    notes[1].fine = 25;
+    const evs = patternEvents(p, patternId, 0, TICKS_PER_BAR);
+    expect(evs[0]).toMatchObject({ pan: -0.5 });
+    expect('fine' in evs[0]).toBe(false);
+    expect(evs[1]).toMatchObject({ fine: 25 });
+    expect('pan' in evs[1]).toBe(false);
+    p.playlist.clips = [{ id: 'c', kind: 'pattern', patternId, track: 0, start: 0, length: TICKS_PER_BAR }];
+    expect(songEvents(p, 0, TICKS_PER_BAR).map((e) => [e.pan, e.fine])).toEqual([[-0.5, undefined], [undefined, 25]]);
   });
 });

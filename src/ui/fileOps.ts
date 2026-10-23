@@ -1,3 +1,4 @@
+import { barTicks, BEAT_UNITS, formatTimeSig, MAX_BEATS } from '../model/time';
 import { parseProject, serializeProject, FILE_EXTENSION } from '../model/serialize';
 import { renderProject } from '../audio/render';
 import { encodeWav } from '../audio/wav';
@@ -191,7 +192,9 @@ export async function exportMidi(): Promise<void> {
   const { project, ui } = useStore.getState();
   const song = ui.mode === 'song';
   const pattern = project.patterns.find((p) => p.id === ui.selectedPatternId) ?? project.patterns[0];
-  const events = song ? songEvents(project, 0, songLength(project)) : patternEvents(project, pattern.id, 0, patternLength(pattern));
+  const events = song
+    ? songEvents(project, 0, songLength(project))
+    : patternEvents(project, pattern.id, 0, patternLength(pattern, barTicks(project.timeSig)));
   let nextChannel = 0;
   const tracks: MidiTrack[] = [];
   for (const channel of project.channels) {
@@ -213,7 +216,7 @@ export async function exportMidi(): Promise<void> {
     alert(song ? 'A música não tem notas para exportar.' : 'Este pattern não tem notas para exportar.');
     return;
   }
-  const data = writeMidi({ bpm: project.bpm, tracks });
+  const data = writeMidi({ bpm: project.bpm, timeSig: project.timeSig, tracks });
   const name = `${safeName(song ? project.name : `${project.name} - ${pattern.name}`)}.mid`;
   if (desktop) await desktop.exportFile(name, data, 'mid');
   else downloadBlob(new Blob([data], { type: 'audio/midi' }), name);
@@ -265,6 +268,17 @@ export async function importMidi(): Promise<void> {
   a.endGesture();
   if (song.bpm && Math.abs(song.bpm - project.bpm) > 0.01 && confirm(`Usar o andamento do arquivo MIDI (${song.bpm} BPM)?`)) {
     a.setBpm(song.bpm);
+  }
+  const sig = song.timeSig;
+  if (
+    sig &&
+    BEAT_UNITS.includes(sig.beatUnit) &&
+    sig.beats >= 1 &&
+    sig.beats <= MAX_BEATS &&
+    formatTimeSig(sig) !== formatTimeSig(project.timeSig) &&
+    confirm(`Usar a fórmula de compasso do arquivo MIDI (${formatTimeSig(sig)})?`)
+  ) {
+    a.setTimeSignature(sig.beats, sig.beatUnit);
   }
   a.toggleWindow('channelRack', true);
 }

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { produce, type Draft } from 'immer';
-import type { AutomationPoint, AutomationTarget, Channel, EffectSlot, MixerTrack, Note, PlayMode, PlaylistClip, Project } from '../model/types';
+import type { AutomationPoint, AutomationTarget, Channel, EffectSlot, MixerTrack, Note, PlayMode, PlaylistClip, Project, StretchSettings } from '../model/types';
+import { sourceSpeed, STRETCH_PITCH_RANGE } from '../model/stretch';
 import { describeTarget } from '../model/automation';
 import { canRoute } from '../model/routing';
 import {
@@ -15,7 +16,7 @@ import {
   uid,
 } from '../model/defaults';
 import { findPattern, patternLength, songLength } from '../model/pattern';
-import { TICKS_PER_BAR, TICKS_PER_STEP } from '../model/time';
+import { barTicks, BEAT_UNITS, MAX_BEATS, SNAP_BAR, TICKS_PER_STEP } from '../model/time';
 import { getEffect, getInstrument } from '../plugins/registry';
 import { clampParam, normalizeParams } from '../plugins/params';
 
@@ -64,10 +65,13 @@ export interface WindowState {
 
 export type PluginWindowRef =
   | { kind: 'channel'; channelId: string }
-  | { kind: 'effect'; track: number; slotId: string };
+  | { kind: 'effect'; track: number; slotId: string }
+  /** Audio editor of a channel's sample. */
+  | { kind: 'audio'; channelId: string };
 
 export function pluginWindowKey(ref: PluginWindowRef): string {
-  return ref.kind === 'channel' ? `ch:${ref.channelId}` : `fx:${ref.track}:${ref.slotId}`;
+  if (ref.kind === 'effect') return `fx:${ref.track}:${ref.slotId}`;
+  return `${ref.kind === 'channel' ? 'ch' : 'au'}:${ref.channelId}`;
 }
 
 export interface UIState {
@@ -81,6 +85,8 @@ export interface UIState {
   recording: boolean;
   /** What record captures: notes played live, or audio from an input into the playlist. */
   recordMode: 'notes' | 'audio';
+  /** Song mode loops this playlist region (ticks) instead of the whole song. */
+  songLoop: { start: number; end: number } | null;
   windows: Record<WindowId, WindowState>;
   pluginWindows: Array<PluginWindowRef & { x: number; y: number; z: number }>;
   topZ: number;
@@ -151,6 +157,8 @@ export interface AppState {
   loadDemo(): void;
   setProjectName(name: string): void;
   setBpm(bpm: number, gesture?: boolean): void;
+  /** Beats per bar and beat unit (4/4 clears it). Positions in ticks stay where they are. */
+  setTimeSignature(beats: number, beatUnit: number): void;
 
   addChannel(instrumentId: string, preset?: string): string;
   removeChannel(id: string): void;
@@ -160,9 +168,15 @@ export interface AppState {
   soloChannel(id: string): void;
   setChannelParam(id: string, param: string, value: number): void;
   applyChannelPreset(id: string, presetIndex: number): void;
-  setChannelSample(id: string, name: string, data: string): void;
+  /** Puts a new sample asset on the channel; returns the asset id. */
+  setChannelSample(id: string, name: string, data: string): string;
   /** Drum Pads: puts a sample on a pad (or clears it with null data). */
   setPadSample(id: string, pad: number, name: string, data: string | null, history?: boolean): void;
+  /**
+   * Sampler time-stretch (null turns it off). The channel's audio clips are
+   * resized so they keep covering the same part of the sample.
+   */
+  setChannelStretch(id: string, stretch: StretchSettings | null, history?: boolean): void;
 
   addPattern(): void;
   clonePattern(id: string): void;
@@ -189,6 +203,11 @@ export interface AppState {
   makeClipUnique(id: string): void;
   removeClip(id: string, history?: boolean): void;
   updateTrack(index: number, patch: { name?: string; mute?: boolean }): void;
+  /** Adds a playlist track at the bottom; returns its index. */
+  addPlaylistTrack(name?: string): number;
+  addMarker(tick: number, name?: string): string;
+  updateMarker(id: string, patch: { tick?: number; name?: string }, history?: boolean): void;
+  removeMarker(id: string): void;
 
   updateMixerTrack(index: number, patch: Partial<Pick<MixerTrack, 'name' | 'volume' | 'pan' | 'mute' | 'solo'>>, history?: boolean): void;
   addEffect(track: number, pluginId: string): string | null;
@@ -207,6 +226,7 @@ export interface AppState {
   selectMixerTrack(index: number): void;
   setMode(mode: PlayMode): void;
   setSongStart(tick: number): void;
+  setSongLoop(range: { start: number; end: number } | null): void;
   toggleMetronome(): void;
   toggleRecording(): void;
   setRecordMode(mode: 'notes' | 'audio'): void;
@@ -232,11 +252,12 @@ function initialUI(project: Project): UIState {
     metronome: false,
     recording: false,
     recordMode: 'notes',
+    songLoop: null,
     windows: structuredClone(DEFAULT_WINDOWS),
     pluginWindows: [],
     topZ: 10,
     pianoRoll: { snap: TICKS_PER_STEP, zoom: 1, scaleRoot: 0, scale: -1, stamp: -1 },
-    playlist: { snap: 384, zoom: 1 },
+    playlist: { snap: SNAP_BAR, zoom: 1 },
   };
 }
 
@@ -245,9 +266,9 @@ function reconcileUI(ui: UIState, project: Project): UIState {
   const patternOk = project.patterns.some((p) => p.id === ui.selectedPatternId);
   const channelOk = ui.selectedChannelId === null || project.channels.some((c) => c.id === ui.selectedChannelId);
   const pluginWindows = ui.pluginWindows.filter((w) =>
-    w.kind === 'channel'
-      ? project.channels.some((c) => c.id === w.channelId)
-      : project.mixer[w.track]?.effects.some((e) => e.id === w.slotId),
+    w.kind === 'effect'
+      ? project.mixer[w.track]?.effects.some((e) => e.id === w.slotId)
+      : project.channels.some((c) => c.id === w.channelId),
   );
   if (patternOk && channelOk && pluginWindows.length === ui.pluginWindows.length) return ui;
   return {
@@ -337,6 +358,15 @@ export const useStore = create<AppState>()((set, get) => {
     setBpm(bpm, gesture = false) {
       const value = Math.round(Math.min(400, Math.max(20, bpm)) * 100) / 100;
       mutate((d) => void (d.bpm = value), !gesture);
+    },
+
+    setTimeSignature(beats, beatUnit) {
+      const b = Math.round(Math.min(MAX_BEATS, Math.max(1, beats)));
+      if (!BEAT_UNITS.includes(beatUnit)) return;
+      mutate((d) => {
+        if (b === 4 && beatUnit === 4) delete d.timeSig;
+        else d.timeSig = { beats: b, beatUnit };
+      });
     },
 
     addChannel(instrumentId, preset) {
@@ -437,6 +467,7 @@ export const useStore = create<AppState>()((set, get) => {
           c.name = label;
         }
       });
+      return sampleId;
     },
 
     setPadSample(id, pad, name, data, history = true) {
@@ -449,6 +480,26 @@ export const useStore = create<AppState>()((set, get) => {
         pads[pad] = data ? sampleId : null;
         c.pads = pads;
         pruneSamples(d);
+      }, history);
+    },
+
+    setChannelStretch(id, stretch, history = true) {
+      mutate((d) => {
+        const c = channelOf(d, id);
+        if (!c) return;
+        const before = sourceSpeed(c.stretch, d.bpm);
+        if (stretch) {
+          c.stretch = {
+            mode: stretch.mode,
+            pitch: Math.min(STRETCH_PITCH_RANGE, Math.max(-STRETCH_PITCH_RANGE, stretch.pitch)),
+            bpm: stretch.bpm > 0 ? Math.min(999, Math.max(10, stretch.bpm)) : 0,
+          };
+        } else delete c.stretch;
+        const after = sourceSpeed(c.stretch, d.bpm);
+        if (before === after) return;
+        for (const clip of d.playlist.clips) {
+          if (clip.kind === 'audio' && clip.channelId === id) clip.length = Math.max(1, Math.round((clip.length * before) / after));
+        }
       }, history);
     },
 
@@ -526,6 +577,16 @@ export const useStore = create<AppState>()((set, get) => {
           if (patch.start !== undefined) n.start = Math.max(0, patch.start);
           if (patch.length !== undefined) n.length = Math.max(1, patch.length);
           if (patch.velocity !== undefined) n.velocity = Math.min(1, Math.max(0, patch.velocity));
+          if (patch.pan !== undefined) {
+            const pan = Math.round(Math.min(1, Math.max(-1, patch.pan)) * 100) / 100;
+            if (pan) n.pan = pan;
+            else delete n.pan;
+          }
+          if (patch.fine !== undefined) {
+            const fine = Math.round(Math.min(100, Math.max(-100, patch.fine)));
+            if (fine) n.fine = fine;
+            else delete n.fine;
+          }
         }
         list.sort((a, b) => a.start - b.start);
       }, history);
@@ -558,7 +619,8 @@ export const useStore = create<AppState>()((set, get) => {
       const pattern = findPattern(get().project, patternId);
       const id = uid('cl');
       if (!pattern) return id;
-      const clip: PlaylistClip = { id, kind: 'pattern', patternId, track, start: Math.max(0, start), length: length ?? patternLength(pattern) };
+      const bar = barTicks(get().project.timeSig);
+      const clip: PlaylistClip = { id, kind: 'pattern', patternId, track, start: Math.max(0, start), length: length ?? patternLength(pattern, bar) };
       mutate((d) => void d.playlist.clips.push(clip));
       return id;
     },
@@ -579,7 +641,7 @@ export const useStore = create<AppState>()((set, get) => {
       const used = new Set(clips.map((c) => c.track));
       let track = tracks.findIndex((_, i) => !used.has(i));
       const id = uid('cl');
-      const length = Math.max(songLength(project), TICKS_PER_BAR * 4);
+      const length = Math.max(songLength(project), barTicks(project.timeSig) * 4);
       const value = info.toNorm(info.current);
       mutate((d) => {
         if (track < 0) {
@@ -646,6 +708,39 @@ export const useStore = create<AppState>()((set, get) => {
     },
     removeClip(id, history = true) {
       mutate((d) => void (d.playlist.clips = d.playlist.clips.filter((c) => c.id !== id)), history);
+    },
+    addMarker(tick, name) {
+      const id = uid('mk');
+      mutate((d) => {
+        const markers = (d.playlist.markers ??= []);
+        markers.push({ id, tick: Math.max(0, Math.round(tick)), name: (name ?? `Marcador ${markers.length + 1}`).slice(0, 60) });
+        markers.sort((a, b) => a.tick - b.tick);
+      });
+      return id;
+    },
+    updateMarker(id, patch, history = true) {
+      mutate((d) => {
+        const m = d.playlist.markers?.find((x) => x.id === id);
+        if (!m) return;
+        if (patch.name !== undefined) m.name = patch.name.trim().slice(0, 60) || m.name;
+        if (patch.tick !== undefined) m.tick = Math.max(0, Math.round(patch.tick));
+        d.playlist.markers!.sort((a, b) => a.tick - b.tick);
+      }, history);
+    },
+    removeMarker(id) {
+      mutate((d) => {
+        if (!d.playlist.markers) return;
+        d.playlist.markers = d.playlist.markers.filter((m) => m.id !== id);
+        if (d.playlist.markers.length === 0) delete d.playlist.markers;
+      });
+    },
+    addPlaylistTrack(name) {
+      let index = 0;
+      mutate((d) => {
+        index = d.playlist.tracks.length;
+        d.playlist.tracks.push({ id: uid('tr'), name: (name ?? `Faixa ${index + 1}`).slice(0, 60), mute: false });
+      });
+      return index;
     },
     updateTrack(index, patch) {
       mutate((d) => {
@@ -764,6 +859,16 @@ export const useStore = create<AppState>()((set, get) => {
     },
     setSongStart(tick) {
       ui((u) => void (u.songStart = Math.max(0, tick)));
+    },
+    setSongLoop(range) {
+      ui((u) => {
+        if (!range) u.songLoop = null;
+        else {
+          const start = Math.max(0, Math.round(Math.min(range.start, range.end)));
+          const end = Math.round(Math.max(range.start, range.end));
+          u.songLoop = end > start ? { start, end } : null;
+        }
+      });
     },
     toggleRecording() {
       ui((u) => void (u.recording = !u.recording));

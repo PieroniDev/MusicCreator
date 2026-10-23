@@ -229,7 +229,7 @@ export const drumSynth: InstrumentPlugin = {
     preset('Prato', 8, { level: 0.5 }),
   ],
 
-  noteOn(ctx, destination, { key, velocity, time, rootKey, params: values }) {
+  noteOn(ctx, destination, { key, velocity, time, rootKey, params: values, detune = 0 }) {
     const p = paramReader(params, values);
     const voice = new NodeVoice(ctx, destination);
     const level = voice.node(ctx.createGain());
@@ -240,7 +240,7 @@ export const drumSynth: InstrumentPlugin = {
       voice,
       out: level,
       t: time,
-      pitch: Math.pow(2, (p('tune') + key - rootKey) / 12),
+      pitch: Math.pow(2, (p('tune') + key - rootKey + detune / 100) / 12),
       decay: p('decay'),
       tone: p('tone'),
       snap: p('snap'),

@@ -55,7 +55,7 @@ export const sampler: InstrumentPlugin = {
     { name: 'Lo-fi', params: { cutoff: 2200, resonance: 2, coarse: -2 } },
   ],
 
-  noteOn(ctx, destination, { key, velocity, time, rootKey, params: values, sample, offset: clipOffset = 0, gated = false }) {
+  noteOn(ctx, destination, { key, velocity, time, rootKey, params: values, sample, offset: clipOffset = 0, rate = 1, gated = false, detune = 0 }) {
     const p = paramReader(params, values);
     const voice = new NodeVoice(ctx, destination);
     const filter = voice.node(ctx.createBiquadFilter());
@@ -76,8 +76,8 @@ export const sampler: InstrumentPlugin = {
     const buffer = p('reverse') >= 0.5 ? reverseBuffer(ctx, sample) : sample;
     const src = voice.source(ctx.createBufferSource());
     src.buffer = buffer;
-    const semis = (p('keytrack') >= 0.5 ? key - rootKey : 0) + p('coarse') + p('fine') / 100;
-    src.playbackRate.value = Math.pow(2, semis / 12);
+    const semis = (p('keytrack') >= 0.5 ? key - rootKey : 0) + p('coarse') + (p('fine') + detune) / 100;
+    src.playbackRate.value = Math.pow(2, semis / 12) * rate;
     const offset = Math.min(buffer.duration, p('start') * buffer.duration + clipOffset);
     const loop = p('loop') >= 0.5;
     if (loop) {

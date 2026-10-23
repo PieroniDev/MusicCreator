@@ -17,7 +17,14 @@ engine.attach({
   getProject: () => useStore.getState().project,
   getTransport: () => {
     const { ui } = useStore.getState();
-    return { mode: ui.mode, patternId: ui.selectedPatternId, songStart: ui.songStart, metronome: ui.metronome };
+    return {
+      mode: ui.mode,
+      patternId: ui.selectedPatternId,
+      songStart: ui.songStart,
+      metronome: ui.metronome,
+      loop: ui.songLoop,
+      recordingAudio: ui.recording && ui.recordMode === 'audio',
+    };
   },
 });
 useStore.subscribe((state, prev) => {

@@ -9,9 +9,14 @@ import type {
   Pattern,
   PlaylistClip,
   PlaylistTrack,
+  Marker,
   Project,
   SampleAsset,
+  StretchSettings,
+  TimeSignature,
 } from './types';
+import { BEAT_UNITS, MAX_BEATS } from './time';
+import { STRETCH_PITCH_RANGE } from './stretch';
 import { canRoute } from './routing';
 import { targetExists } from './automation';
 import { colorAt, createMixerTrack, createPlaylistTracks, MAX_EFFECT_SLOTS, MIXER_INSERTS, PLAYLIST_TRACKS, uid } from './defaults';
@@ -34,12 +39,32 @@ function parseNote(v: unknown): Note | null {
   if (!isObj(v)) return null;
   const length = num(v.length, 0, 0, 1e7);
   if (length <= 0) return null;
+  const pan = num(v.pan, 0, -1, 1);
+  const fine = num(v.fine, 0, -100, 100);
   return {
     id: str(v.id, uid('n')),
     key: Math.round(num(v.key, 60, 0, 127)),
     start: num(v.start, 0, 0, 1e7),
     length,
     velocity: num(v.velocity, 0.8, 0, 1),
+    ...(pan ? { pan } : {}),
+    ...(fine ? { fine } : {}),
+  };
+}
+
+function parseTimeSig(v: unknown): { timeSig?: TimeSignature } {
+  if (!isObj(v)) return {};
+  const beats = Math.round(num(v.beats, 4, 1, MAX_BEATS));
+  const beatUnit = BEAT_UNITS.includes(v.beatUnit as number) ? (v.beatUnit as number) : 4;
+  return beats === 4 && beatUnit === 4 ? {} : { timeSig: { beats, beatUnit } };
+}
+
+function parseStretch(v: unknown): StretchSettings | undefined {
+  if (!isObj(v)) return undefined;
+  return {
+    mode: v.mode === 'resample' ? 'resample' : 'stretch',
+    pitch: num(v.pitch, 0, -STRETCH_PITCH_RANGE, STRETCH_PITCH_RANGE),
+    bpm: v.bpm === 0 ? 0 : num(v.bpm, 0, 10, 999),
   };
 }
 
@@ -60,6 +85,7 @@ function parseChannel(v: unknown, i: number, mixerSize: number): Channel | null 
     rootKey: Math.round(num(v.rootKey, 60, 0, 127)),
     sampleId: typeof v.sampleId === 'string' ? v.sampleId : undefined,
     pads: Array.isArray(v.pads) ? v.pads.slice(0, 16).map((x) => (typeof x === 'string' ? x : null)) : undefined,
+    stretch: parseStretch(v.stretch),
   };
 }
 
@@ -146,6 +172,8 @@ function parseTarget(v: unknown, mixerSize: number): AutomationTarget | null {
       return validTrack && typeof v.slotId === 'string' && typeof v.param === 'string'
         ? { kind: 'effect', track, slotId: v.slotId, param: v.param }
         : null;
+    case 'tempo':
+      return { kind: 'tempo' };
     default:
       return null;
   }
@@ -230,6 +258,12 @@ export function parseProject(input: unknown): Project {
     .map((c) => parseClip(c, clipContext))
     .filter((c): c is PlaylistClip => c !== null);
 
+  const markers: Marker[] = arr(playlist.markers)
+    .filter(isObj)
+    .map((m) => ({ id: str(m.id, uid('mk')), tick: Math.round(num(m.tick, 0, 0, 1e7)), name: str(m.name, 'Marcador').slice(0, 60) }))
+    .sort((a, b) => a.tick - b.tick)
+    .slice(0, 500);
+
   const samples: Record<string, SampleAsset> = {};
   if (isObj(input.samples)) {
     for (const [id, s] of Object.entries(input.samples)) {
@@ -240,16 +274,18 @@ export function parseProject(input: unknown): Project {
     if (c.sampleId && !samples[c.sampleId]) c.sampleId = undefined;
     if (c.pads) c.pads = c.pads.map((id) => (id && samples[id] ? id : null));
     else delete c.pads;
+    if (!c.stretch) delete c.stretch;
   }
 
   const project: Project = {
     version: 1,
     name: str(input.name, 'Sem título'),
     bpm: num(input.bpm, 130, 20, 400),
+    ...parseTimeSig(input.timeSig),
     swing: num(input.swing, 0, 0, 1),
     channels,
     patterns,
-    playlist: { tracks, clips },
+    playlist: { tracks, clips, ...(markers.length ? { markers } : {}) },
     mixer,
     samples,
   };

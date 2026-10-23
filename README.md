@@ -20,9 +20,58 @@ A cada push, o GitHub Actions gera os instaladores:
 2. Em **Artifacts**, baixe **MusicCreator-Windows** (ou MusicCreator-Linux).
 3. Descompacte e rode o `MusicCreator Setup x.y.z.exe`.
 
-O instalador não tem assinatura digital, então o Windows SmartScreen pode avisar
-"Editor desconhecido": clique em **Mais informações → Executar assim mesmo**. O build de
-macOS roda só manualmente (**Actions → Desktop → Run workflow**).
+O build de macOS roda só manualmente (**Actions → Desktop → Run workflow**).
+
+### O aviso "O Windows protegeu o computador" (SmartScreen)
+
+O Windows mostra esse aviso para programas baixados que não têm assinatura digital de
+um editor conhecido. O instalador gerado pelo GitHub não é assinado, porque a assinatura
+exige um certificado emitido para você. As saídas, da mais rápida à mais completa:
+
+**1. No seu computador, agora (grátis).** Clique em **Mais informações → Executar assim
+mesmo**. Outra opção: clique com o botão direito no `.exe` → **Propriedades** → marque
+**Desbloquear** → OK, e o aviso não aparece mais para esse arquivo. É seguro porque o
+instalador foi gerado a partir do seu próprio código.
+
+**2. Microsoft Store (grátis, sem aviso para ninguém — recomendado).** Na Store, a
+Microsoft assina o pacote com o certificado dela, então quem instala por lá não vê
+aviso. O cadastro de desenvolvedor individual é gratuito, e este repositório já gera o
+pacote da Store (`MusicCreator-MicrosoftStore`, um `.appx`). Os passos:
+
+1. Crie a conta em [storedeveloper.microsoft.com](https://storedeveloper.microsoft.com/)
+   como desenvolvedor individual. A verificação pede documento com foto e uma selfie.
+2. No Partner Center, crie o app e reserve o nome (por exemplo, "MusicCreator").
+3. Em **Gerenciamento do produto → Identidade do produto**, copie três valores:
+   `Package/Identity/Name`, `Package/Identity/Publisher` e
+   `Package/Properties/PublisherDisplayName`.
+4. No GitHub: **Settings → Secrets and variables → Actions → aba Variables**. Crie as
+   variáveis `MS_STORE_IDENTITY_NAME`, `MS_STORE_PUBLISHER` e
+   `MS_STORE_PUBLISHER_DISPLAY_NAME` com esses valores.
+5. Rode de novo o workflow **Desktop** e baixe o artefato **MusicCreator-MicrosoftStore**.
+6. No Partner Center, crie uma submissão:
+   - envie o `.appx` em **Pacotes**;
+   - preencha a página da loja (descrição, capturas de tela, classificação etária);
+   - em **Recursos restritos** (`runFullTrust`), explique que é um app desktop
+     (Electron) que lê e salva projetos e samples escolhidos pelo usuário.
+7. A certificação leva de horas a alguns dias. A cada nova versão, aumente o campo
+   `version` do `package.json`; a Store exige número de versão maior a cada envio.
+
+O identificador padrão do `package.json` (`PieroniDev.MusicCreator`) serve só para
+testar o build; a Store recusa pacotes que não usem a identidade do passo 3.
+
+**3. Certificado de assinatura de código (pago).** Serve para tirar o aviso do `.exe`
+baixado fora da Store. Mas assinar não basta para eliminar o aviso: desde 2024 nem
+certificados EV pulam o SmartScreen. A assinatura troca "Fornecedor desconhecido" pelo
+seu nome, e o aviso some à medida que o programa ganha reputação (downloads sem
+problemas). Há duas formas:
+
+- **Certificado OV** de uma autoridade certificadora (Certum, Sectigo, SSL.com…), de
+  ~US$ 100 a 400 por ano. A Certum tem opção mais barata para código aberto. A chave
+  fica num token físico ou num serviço em nuvem.
+- **Azure Artifact Signing** (~US$ 10/mês). Hoje só aceita pessoa física dos EUA ou do
+  Canadá, e empresas de alguns países (o Brasil não está na lista).
+
+Com um certificado em mãos, a assinatura pode ser adicionada a este workflow.
 
 ## Rodar a partir do código
 

@@ -41,6 +41,7 @@
   "build": {
     "appId": "dev.pieroni.musiccreator",
     "productName": "MusicCreator",
+    "copyright": "Copyright © 2026 PieroniDev",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -67,6 +68,18 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
+    },
+    "appx": {
+      "applicationId": "MusicCreator",
+      "identityName": "PieroniDev.MusicCreator",
+      "publisher": "CN=PieroniDev",
+      "publisherDisplayName": "PieroniDev",
+      "displayName": "MusicCreator",
+      "backgroundColor": "#121519",
+      "languages": [
+        "pt-BR",
+        "en-US"
+      ]
     },
     "mac": {
       "target": [

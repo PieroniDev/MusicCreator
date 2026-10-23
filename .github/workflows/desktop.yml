@@ -34,3 +34,29 @@ jobs:
             release/*.AppImage
             release/*.dmg
           if-no-files-found: error
+
+      # Microsoft Store package. The Store signs it with Microsoft's certificate,
+      # so installs from the Store show no SmartScreen warning. The identity must
+      # be the one Partner Center assigns to the app; set it in the repository
+      # variables MS_STORE_IDENTITY_NAME, MS_STORE_PUBLISHER and
+      # MS_STORE_PUBLISHER_DISPLAY_NAME (until then a placeholder identity is
+      # used, fine for testing the build but not accepted by the Store).
+      - name: Build Microsoft Store package
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          IDENTITY_NAME: ${{ vars.MS_STORE_IDENTITY_NAME }}
+          PUBLISHER: ${{ vars.MS_STORE_PUBLISHER }}
+          PUBLISHER_DISPLAY_NAME: ${{ vars.MS_STORE_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          args=()
+          if [ -n "$IDENTITY_NAME" ]; then args+=("-c.appx.identityName=$IDENTITY_NAME"); fi
+          if [ -n "$PUBLISHER" ]; then args+=("-c.appx.publisher=$PUBLISHER"); fi
+          if [ -n "$PUBLISHER_DISPLAY_NAME" ]; then args+=("-c.appx.publisherDisplayName=$PUBLISHER_DISPLAY_NAME"); fi
+          npx electron-builder --win appx --publish never "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: MusicCreator-MicrosoftStore
+          path: release/*.appx
+          if-no-files-found: error
